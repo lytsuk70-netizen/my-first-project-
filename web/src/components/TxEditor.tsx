@@ -143,17 +143,30 @@ export function TxEditor({ initial, mode, title, questions, importMessageId, sou
       </div>
       <Field label={t.details}><textarea className="input" value={d.details} onChange={(e) => set({ details: e.target.value })} maxLength={2000} /></Field>
       <Field label={t.receipt}>
-        <div className="row" style={{ flexWrap: 'wrap' }}>
+        <div className="thumbs">
           {attachments.map((a) => (
-            <span key={a.id} className="chip">
-              <a href={`/api/attachments/${a.id}`} target="_blank" rel="noreferrer">{a.mimeType.startsWith('image') ? '🧾' : '📄'} {a.filename}</a>
-              <button className="btn ghost small" onClick={() => removeAttachment(a.id)} aria-label={t.delete}>✕</button>
-            </span>
+            <div key={a.id} className="thumb">
+              <a href={`/api/attachments/${a.id}`} target="_blank" rel="noreferrer" title={a.filename}>
+                {a.mimeType.startsWith('image/') && a.mimeType !== 'image/heic' ? <img src={`/api/attachments/${a.id}`} alt={a.filename} loading="lazy" /> : <span className="doc">📄<small>{a.filename}</small></span>}
+              </a>
+              <button className="x" onClick={() => removeAttachment(a.id)} aria-label={t.delete}>✕</button>
+            </div>
           ))}
-          {pending.map((f, i) => <span key={i} className="chip">🧾 {f.name}</span>)}
-          <label className="btn small" style={{ display: 'inline-flex', alignItems: 'center' }}>
-            📷 {t.addPhoto}
-            <input type="file" accept={ACCEPT} capture="environment" multiple hidden onChange={(e) => uploadNow(e.target.files)} />
+          {pending.map((f, i) => (
+            <div key={i} className="thumb">
+              {f.type.startsWith('image/') && f.type !== 'image/heic' ? <img src={URL.createObjectURL(f)} alt={f.name} /> : <span className="doc">📄<small>{f.name}</small></span>}
+              <button className="x" onClick={() => setPending((p) => p.filter((_, j) => j !== i))} aria-label={t.delete}>✕</button>
+            </div>
+          ))}
+        </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label className="btn small grow" style={{ textAlign: 'center' }}>
+            📷 {t.takePhoto}
+            <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => { uploadNow(e.target.files); e.target.value = ''; }} />
+          </label>
+          <label className="btn small grow" style={{ textAlign: 'center' }}>
+            🖼️ {t.pickFile}
+            <input type="file" accept={ACCEPT} multiple hidden onChange={(e) => { uploadNow(e.target.files); e.target.value = ''; }} />
           </label>
         </div>
       </Field>

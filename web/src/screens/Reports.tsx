@@ -66,6 +66,7 @@ export function Reports() {
         <button className={kind === 'expense' ? 'on c-expense' : ''} onClick={() => setKind('expense')}>{t.expenses}</button>
         <button className={kind === 'income' ? 'on c-income' : ''} onClick={() => setKind('income')}>{t.income}</button>
       </div>
+      <a className="btn small block" style={{ display: 'block', textAlign: 'center', textDecoration: 'none', color: 'var(--text)', marginBottom: 12 }} href={`/api/export/xlsx${qs({ from, to })}`} download>📊 {t.exportXlsx}</a>
       {rep.error && <div className="error">{rep.error}</div>}
       {r && sec && (
         <>

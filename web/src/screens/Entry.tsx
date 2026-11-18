@@ -15,7 +15,7 @@ const MAX_LEN = 12;
 /** Expense / Income entry: amount -> account -> category -> confirm. */
 export function Entry({ type }: { type: TxType }) {
   const { t } = useT();
-  const { accounts, categories, version } = useStore();
+  const { accounts, categories, version, pending, setTab, setMenu } = useStore();
   const active = accounts.filter((a) => !a.isArchived);
   const storageKey = `gok.lastAccount.${type}`;
   const [amount, setAmount] = useState('');
@@ -79,6 +79,11 @@ export function Entry({ type }: { type: TxType }) {
         <button className="icon-btn" onClick={() => setVoice(true)} aria-label={t.voice}>{Icons.mic}</button>
       </div>
 
+      {pending > 0 && (
+        <button className="banner" onClick={() => { setTab('menu'); setMenu('import'); }}>
+          <span style={{ fontSize: 20 }}>🏦</span><span className="grow"><b>{pending}</b> {t.inboxBanner}</span>{Icons.chevR}
+        </button>
+      )}
       {!active.length ? (
         <div className="card empty">
           <p>{t.noAccounts}</p>

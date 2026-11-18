@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { get } from './api';
 import { Icons } from './components/ui';
+import { VoiceSheet } from './components/VoiceSheet';
 import { I18nContext, dictionaries } from './i18n';
 import { Accounts } from './screens/Accounts';
 import { Auth } from './screens/Auth';
@@ -11,7 +12,8 @@ import { StoreProvider, useStore, type Tab } from './store';
 import type { Settings } from './types';
 
 function Shell() {
-  const { tab, setTab, settings } = useStore();
+  const { tab, setTab, settings, pending } = useStore();
+  const [voice, setVoice] = useState(false);
   const t = dictionaries[settings.language] ?? dictionaries.uk;
   useEffect(() => { document.documentElement.lang = settings.language; document.title = t.appName; }, [settings.language, t.appName]);
   const nav: Array<[Tab, string, JSX.Element, string]> = [
@@ -29,9 +31,15 @@ function Shell() {
       </main>
       <nav className="nav">
         {nav.map(([key, label, icon, cls]) => (
-          <button key={key} className={(tab === key ? 'active ' : '') + cls} onClick={() => setTab(key)} aria-current={tab === key ? 'page' : undefined}>{icon}<span>{label}</span></button>
+          <button key={key} className={(tab === key ? 'active ' : '') + cls} onClick={() => setTab(key)} aria-current={tab === key ? 'page' : undefined}>
+            {icon}<span>{label}</span>{key === 'menu' && pending > 0 && <span className="badge">{pending > 99 ? '99+' : pending}</span>}
+          </button>
         ))}
       </nav>
+      {tab !== 'expense' && tab !== 'income' && (
+        <button className="fab-voice" onClick={() => setVoice(true)} aria-label={t.voiceControl} title={t.voiceControl}>{Icons.mic}</button>
+      )}
+      {voice && <VoiceSheet onClose={() => setVoice(false)} />}
     </I18nContext.Provider>
   );
 }

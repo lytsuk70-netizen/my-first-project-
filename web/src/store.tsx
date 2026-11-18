@@ -3,7 +3,8 @@ import { get } from './api';
 import type { Account, Category, Currency, Project, Settings } from './types';
 
 export type Tab = 'expense' | 'income' | 'accounts' | 'feed' | 'menu';
-export type MenuScreen = null | 'reports' | 'categories' | 'projects' | 'rates' | 'import' | 'settings' | 'audit';
+export type MenuScreen = null | 'reports' | 'categories' | 'projects' | 'rates' | 'import' | 'integrations' | 'settings' | 'audit';
+export type AccountsTab = 'accounts' | 'transfers' | 'archive';
 export interface FeedPreset { kinds?: string[]; accountId?: string; categoryId?: string; projectId?: string; from?: string; to?: string; nonce: number }
 
 interface Store {
@@ -15,6 +16,8 @@ interface Store {
   menu: MenuScreen; setMenu: (m: MenuScreen) => void;
   feedPreset: FeedPreset | null; openFeed: (p: Omit<FeedPreset, 'nonce'>) => void;
   toast: (msg: string, error?: boolean) => void;
+  accountsTab: AccountsTab; setAccountsTab: (t: AccountsTab) => void;
+  pending: number; refreshPending: () => void;
   sharedText: string | null; consumeShared: () => void;
 }
 
@@ -39,6 +42,11 @@ export function StoreProvider({ settings: initialSettings, children }: { setting
   const [toastMsg, setToastMsg] = useState<{ msg: string; error?: boolean } | null>(null);
   const toastTimer = useRef<number>();
   const [sharedText, setSharedText] = useState<string | null>(null);
+  const [accountsTab, setAccountsTab] = useState<AccountsTab>('accounts');
+  const [pending, setPending] = useState(0);
+  const refreshPending = useCallback(() => { get<{ pending: number }>('/import/count').then((r) => setPending(r.pending)).catch(() => {}); }, []);
+  // bank feeds (Telegram, monobank, SMS forwarding) arrive in the background: poll the inbox counter
+  useEffect(() => { refreshPending(); const h = window.setInterval(refreshPending, 60000); return () => window.clearInterval(h); }, [refreshPending]);
 
   const reload = useCallback(async () => {
     const [a, c, p, cur, s] = await Promise.all([get<Account[]>('/accounts'), get<Category[]>('/categories'), get<Project[]>('/projects'), get<Currency[]>('/currencies'), get<Settings>('/settings')]);
@@ -58,13 +66,14 @@ export function StoreProvider({ settings: initialSettings, children }: { setting
 
   const value = useMemo<Store>(() => ({
     accounts, categories, projects, currencies, settings, reload, version,
-    changed: async () => { await reload(); setVersion((v) => v + 1); },
+    changed: async () => { await reload(); setVersion((v) => v + 1); refreshPending(); },
     tab, setTab: (t) => { setTabState(t); if (t !== 'menu') setMenu(null); try { localStorage.setItem('gok.tab', t); } catch { /* ignore */ } },
     menu, setMenu,
     feedPreset, openFeed: (p) => { setFeedPreset({ ...p, nonce: Date.now() }); setTabState('feed'); setMenu(null); },
     toast: (msg, error) => { setToastMsg({ msg, error }); window.clearTimeout(toastTimer.current); toastTimer.current = window.setTimeout(() => setToastMsg(null), error ? 4500 : 2200); },
     sharedText, consumeShared: () => setSharedText(null),
-  }), [accounts, categories, projects, currencies, settings, reload, version, tab, menu, feedPreset, sharedText]);
+    accountsTab, setAccountsTab, pending, refreshPending,
+  }), [accounts, categories, projects, currencies, settings, reload, version, tab, menu, feedPreset, sharedText, accountsTab, pending, refreshPending]);
 
   return (
     <Ctx.Provider value={value}>

@@ -6,14 +6,16 @@ import { dictionaries, useT } from '../i18n';
 import { money, todayISO } from '../money';
 import { useAsync, useStore, type MenuScreen } from '../store';
 import type { Category, Draft, Project } from '../types';
+import { Banks } from './Banks';
+import { Inbox } from './Inbox';
 import { Reports } from './Reports';
 
 export function Menu() {
   const { t } = useT();
-  const { menu, setMenu } = useStore();
+  const { menu, setMenu, pending } = useStore();
   const items: Array<[MenuScreen, string, string]> = [
     ['reports', '📊', t.reports], ['categories', '🏷️', t.categories], ['projects', '🏗️', t.projects], ['rates', '💱', t.rates],
-    ['import', '✉️', t.smsImport], ['settings', '⚙️', t.settings], ['audit', '🧾', t.audit],
+    ['import', '📥', t.smsImport], ['integrations', '🏦', t.banks], ['settings', '⚙️', t.settings], ['audit', '🧾', t.audit],
   ];
   const current = items.find((i) => i[0] === menu);
   return (
@@ -26,7 +28,7 @@ export function Menu() {
         <>
           <div className="list">
             {items.map(([key, icon, label]) => (
-              <button key={key} className="item" onClick={() => setMenu(key)}><span className="ic">{icon}</span><div className="main"><div className="t1">{label}</div></div>{Icons.chevR}</button>
+              <button key={key} className="item" onClick={() => setMenu(key)}><span className="ic">{icon}</span><div className="main"><div className="t1">{label}</div></div>{key === 'import' && pending > 0 && <span className="src-tag" style={{ background: 'var(--danger)', color: '#fff' }}>{pending}</span>}{Icons.chevR}</button>
             ))}
           </div>
           <LogoutButton />
@@ -36,7 +38,8 @@ export function Menu() {
       {menu === 'categories' && <Categories />}
       {menu === 'projects' && <Projects />}
       {menu === 'rates' && <Rates />}
-      {menu === 'import' && <SmsImport />}
+      {menu === 'import' && <Inbox />}
+      {menu === 'integrations' && <Banks />}
       {menu === 'settings' && <SettingsScreen />}
       {menu === 'audit' && <Audit />}
     </>
@@ -214,66 +217,6 @@ function Rates() {
   );
 }
 
-// ---------- SMS import ----------
-
-interface Imported { id: string; text: string; status: string; alreadyImported: boolean; draft: Draft; duplicates: Array<{ id: string; occurred_at: string; comment: string; account_name: string }> }
-
-function SmsImport() {
-  const { t, lang } = useT();
-  const { accounts, sharedText, consumeShared, version } = useStore();
-  const [text, setText] = useState('');
-  const [results, setResults] = useState<Imported[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<Imported | null>(null);
-  const pending = useAsync(() => get('/import/messages?status=pending'), [version]);
-
-  useEffect(() => { if (sharedText) { setText(sharedText); consumeShared(); } }, [sharedText, consumeShared]);
-  async function parse() {
-    try { setResults(await post('/import/messages', { text, source: 'paste', tzOffsetMinutes: new Date().getTimezoneOffset() })); setError(null); } catch (e: any) { setError(e.message); }
-  }
-  async function ignore(id: string) { await post(`/import/messages/${id}/ignore`); setResults((r) => r.map((x) => (x.id === id ? { ...x, status: 'ignored' } : x))); }
-  const shown: Imported[] = results.length ? results : (pending.data ?? []).map((p: any) => ({ ...p, alreadyImported: true, duplicates: [] }));
-
-  return (
-    <>
-      <p className="faint">{t.smsIosNote}</p>
-      <textarea className="input" style={{ minHeight: 120 }} value={text} onChange={(e) => setText(e.target.value)} placeholder={t.smsPaste} />
-      <ErrorBox error={error} />
-      <button className="btn primary block" style={{ marginTop: 10 }} disabled={!text.trim()} onClick={parse}>{t.parse}</button>
-      {shown.map((m) => {
-        const d = m.draft;
-        const acc = accounts.find((a) => a.id === d.accountId);
-        const done = m.status !== 'pending';
-        return (
-          <div key={m.id} className="card" style={{ marginTop: 12, opacity: done ? 0.6 : 1 }}>
-            <div className="faint" style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
-            <div className="row between" style={{ marginTop: 8 }}>
-              <b className={'num ' + (d.type === 'income' ? 'c-income' : 'c-expense')}>{d.amount ? money(d.amount, d.currency ?? undefined) : '?'}</b>
-              <span className="faint">{acc?.name ?? '?'} · {d.occurredAt ? fmtDate(d.occurredAt, lang) : ''}</span>
-            </div>
-            {d.balance && <div className="faint num">{t.bankBalance}: {money(d.balance, d.balanceCurrency ?? undefined)}{acc ? ` · ${t.appBalance}: ${money(acc.balance, acc.currency)}` : ''}</div>}
-            {m.duplicates.length > 0 && <div className="warn" style={{ marginTop: 6 }}>⚠️ {t.possibleDuplicate}: {m.duplicates.map((x) => `${fmtDate(x.occurred_at, lang)} ${x.account_name} ${x.comment}`).join('; ')}</div>}
-            {d.questions.length > 0 && !done && <div className="faint" style={{ marginTop: 6 }}>{d.questions.join(' ')}</div>}
-            <div className="row" style={{ marginTop: 10 }}>
-              {done ? <span className="faint">{m.status === 'imported' ? t.alreadyImported : t.ignore}</span> : (
-                <>
-                  <button className="btn small" onClick={() => ignore(m.id)}>{t.ignore}</button>
-                  <button className="btn primary small grow" onClick={() => setConfirming(m)}>{t.checkAndConfirm}</button>
-                </>
-              )}
-            </div>
-          </div>
-        );
-      })}
-      {confirming && (
-        <TxEditor mode="create" allowTypeChange importMessageId={confirming.id} source="sms" title={t.checkAndConfirm} questions={confirming.draft.questions}
-          onClose={() => setConfirming(null)} onSaved={() => setResults((r) => r.map((x) => (x.id === confirming.id ? { ...x, status: 'imported' } : x)))}
-          initial={{ type: confirming.draft.type ?? 'expense', amount: confirming.draft.amount ?? '', accountId: confirming.draft.accountId ?? (confirming.draft.candidates.accounts.length === 1 ? confirming.draft.candidates.accounts[0] : ''), categoryId: confirming.draft.categoryId ?? '', occurredAt: confirming.draft.occurredAt, comment: confirming.draft.comment }} />
-      )}
-    </>
-  );
-}
-
 // ---------- settings ----------
 
 function SettingsScreen() {
@@ -305,6 +248,7 @@ function SettingsScreen() {
       <div className="card">
         <a className="btn block" style={{ display: 'block', textAlign: 'center', textDecoration: 'none', color: 'var(--text)' }} href="/api/export/json" download>💾 {t.backupJson}</a>
         <a className="btn block" style={{ display: 'block', textAlign: 'center', textDecoration: 'none', color: 'var(--text)', marginTop: 8 }} href="/api/export/csv" download>📄 {t.exportCsv}</a>
+        <a className="btn block" style={{ display: 'block', textAlign: 'center', textDecoration: 'none', color: 'var(--text)', marginTop: 8 }} href={`/api/export/xlsx?from=2000-01-01&to=${todayISO()}`} download>📊 {t.exportXlsx}</a>
         <p className="faint">{t.backupHint}</p>
       </div>
       <div className="section-title">{t.changePassword}</div>

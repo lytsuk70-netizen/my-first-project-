@@ -12,7 +12,7 @@ const TYPE_ICON: Record<string, string> = { cash: '💵', bank: '🏦', card: '�
 
 export function Accounts() {
   const { t } = useT();
-  const [tab, setTab] = useState<'accounts' | 'transfers' | 'archive'>('accounts');
+  const { accountsTab: tab, setAccountsTab: setTab } = useStore();
   const [edit, setEdit] = useState<Account | 'new' | null>(null);
   return (
     <>

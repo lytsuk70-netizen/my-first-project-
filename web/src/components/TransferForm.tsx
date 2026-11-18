@@ -7,14 +7,16 @@ import type { Transfer } from '../types';
 import { AccountSelect, ErrorBox, Field, Icons, Sheet } from './ui';
 
 /** Transfer / currency exchange form. Used inline (create) and inside a sheet (edit). */
-export function TransferForm({ existing, onDone }: { existing?: Transfer; onDone?: () => void }) {
+export interface TransferDraft { fromAccountId?: string | null; toAccountId?: string | null; amountSent?: string | null; rate?: string | null }
+
+export function TransferForm({ existing, draft, onDone }: { existing?: Transfer; draft?: TransferDraft; onDone?: () => void }) {
   const { t } = useT();
   const { accounts, currencies, changed, toast } = useStore();
   const active = accounts.filter((a) => !a.isArchived);
-  const [fromId, setFromId] = useState(existing?.fromAccountId ?? '');
-  const [toId, setToId] = useState(existing?.toAccountId ?? '');
-  const [sent, setSent] = useState(existing?.amountSent ?? '');
-  const [rate, setRate] = useState(existing && existing.fromCurrency !== existing.toCurrency ? existing.rate : '');
+  const [fromId, setFromId] = useState(existing?.fromAccountId ?? draft?.fromAccountId ?? '');
+  const [toId, setToId] = useState(existing?.toAccountId ?? draft?.toAccountId ?? '');
+  const [sent, setSent] = useState(existing?.amountSent ?? draft?.amountSent ?? '');
+  const [rate, setRate] = useState(existing && existing.fromCurrency !== existing.toCurrency ? existing.rate : draft?.rate ?? '');
   const [received, setReceived] = useState(existing && existing.fromCurrency !== existing.toCurrency ? existing.amountReceived : '');
   const [lastEdited, setLastEdited] = useState<'rate' | 'received'>('rate');
   const [rateBase, setRateBase] = useState(existing?.rateBase ?? '');
@@ -114,7 +116,7 @@ export function TransferForm({ existing, onDone }: { existing?: Transfer; onDone
   );
 }
 
-export function TransferSheet({ transfer, onClose }: { transfer: Transfer; onClose: () => void }) {
+export function TransferSheet({ transfer, draft, title, onClose }: { transfer?: Transfer; draft?: TransferDraft; title?: string; onClose: () => void }) {
   const { t } = useT();
-  return <Sheet title={t.transfer} onClose={onClose}><TransferForm existing={transfer} onDone={onClose} /></Sheet>;
+  return <Sheet title={title ?? t.transfer} onClose={onClose}><TransferForm existing={transfer} draft={draft} onDone={onClose} /></Sheet>;
 }
