@@ -148,7 +148,7 @@ export interface TxInput {
   occurredAt?: string;
   comment?: string;
   details?: string;
-  source?: 'manual' | 'voice' | 'sms' | 'duplicate';
+  source?: 'manual' | 'voice' | 'sms' | 'duplicate' | 'telegram' | 'webhook' | 'monobank';
 }
 
 async function checkCategory(c: Db, userId: string, categoryId: string, type: string) {

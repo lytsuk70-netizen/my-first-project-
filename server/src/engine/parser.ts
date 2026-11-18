@@ -42,7 +42,7 @@ export function translit(s: string): string {
   return [...norm(s)].map((c) => TRANSLIT[c] ?? c).join('').replace(/y/g, 'i');
 }
 
-function words(s: string): string[] {
+export function words(s: string): string[] {
   return norm(s).split(/[^\p{L}\p{N}'*$€₴£]+/u).filter(Boolean);
 }
 
@@ -81,7 +81,7 @@ const CATEGORY_SYNONYMS: Array<[string[], string[]]> = [
   [['бізнес', 'business', 'продаж', 'клієнт', 'sale'], ['бізнес', 'business', 'продаж']],
 ];
 
-const ACCOUNT_ALIASES: Array<[string[], string[]]> = [
+export const ACCOUNT_ALIASES: Array<[string[], string[]]> = [
   // account name contains one of [0] -> phrase may use any of [1]
   [['mono'], ['mono', 'моно']],
   [['privat', 'pryvat', 'приват'], ['privat', 'pryvat', 'приват']],

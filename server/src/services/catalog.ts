@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import type pg from 'pg';
 import { pool, withTx, audit, type Db } from '../db.js';
 import { parseRate, formatMinor, Decimal, parseAmount } from '../engine/money.js';
-import { parseSms, splitMessages, type ParseAccount, type ParseCategory } from '../engine/parser.js';
+import { parseSms, parseVoice, splitMessages, type Draft, type SmsDraft, type ParseAccount, type ParseCategory } from '../engine/parser.js';
 import { NotFound, Invalid, currencies, dec, getSettings, createTransaction, type TxInput } from './ledger.js';
 
 // ---------- defaults ----------
@@ -192,7 +192,7 @@ export { parseContext };
 const normHash = (text: string) => createHash('sha256').update(text.replace(/\s+/g, ' ').trim().toLowerCase()).digest('hex');
 
 /** Finds existing transactions that probably are the same operation. */
-async function findDuplicates(c: Db, userId: string, d: { type: string | null; amount: string | null; currency: string | null; accountId: string | null; occurredAt: string | null }) {
+export async function findDuplicates(c: Db, userId: string, d: { type: string | null; amount: string | null; currency: string | null; accountId: string | null; occurredAt: string | null }) {
   if (!d.amount || !d.currency || !d.type) return [];
   const minor = parseAmount(d.amount, await dec(d.currency));
   const params: unknown[] = [userId, d.type, minor, d.currency, d.occurredAt ?? new Date().toISOString()];
@@ -203,31 +203,93 @@ async function findDuplicates(c: Db, userId: string, d: { type: string | null; a
   return (await c.query(sql + ' ORDER BY abs(extract(epoch FROM t.occurred_at - $5::timestamptz)) LIMIT 5', params)).rows;
 }
 
-export async function importMessages(userId: string, block: string, opts: { source?: 'sms' | 'share' | 'paste'; tzOffsetMinutes?: number }) {
-  const { accounts, categories } = await parseContext(userId);
-  const settings = await getSettings(userId);
-  const out = [];
-  for (const text of splitMessages(block).slice(0, 100)) {
-    const hash = normHash(text);
-    const existing = (await pool.query('SELECT * FROM imported_messages WHERE user_id=$1 AND text_hash=$2', [userId, hash])).rows[0];
-    const draft = parseSms(text, accounts, categories, { tzOffsetMinutes: opts.tzOffsetMinutes, lang: settings.language });
-    const duplicates = await findDuplicates(pool, userId, draft);
-    let row = existing;
-    if (!row) {
-      row = (await pool.query('INSERT INTO imported_messages (user_id, source, raw_text, text_hash, parsed) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-        [userId, opts.source ?? 'paste', text, hash, JSON.stringify(draft)])).rows[0];
-    }
-    out.push({ id: row.id, text, status: row.status, alreadyImported: !!existing, transactionId: row.transaction_id, draft, duplicates });
+export type InboxSource = 'sms' | 'share' | 'paste' | 'telegram' | 'webhook' | 'monobank';
+const TX_SOURCE: Record<InboxSource, TxInput['source']> = { sms: 'sms', share: 'sms', paste: 'sms', telegram: 'telegram', webhook: 'webhook', monobank: 'monobank' };
+
+/** Bank SMS / notification parser first; free text ("200 на таксі з моно") falls back to the voice parser. */
+export function parseAny(text: string, ctx: { accounts: ParseAccount[]; categories: ParseCategory[] }, opts: { tzOffsetMinutes?: number; lang?: 'uk' | 'en' }): SmsDraft {
+  const sms = parseSms(text, ctx.accounts, ctx.categories, opts);
+  if (sms.amount) return sms;
+  const v = parseVoice(text, ctx.accounts, ctx.categories, { lang: opts.lang, defaultType: 'expense' });
+  return { ...v, balance: null, balanceCurrency: null, cardLast4: null, bank: null, merchant: '' };
+}
+
+export function draftReady(d: Draft) {
+  return !!(d.type && d.amount && d.accountId && d.categoryId);
+}
+
+/**
+ * Puts one incoming bank message into the inbox (status "pending"). Never creates a transaction.
+ * Deduplicates by external id (e.g. monobank statement id) or by normalised text.
+ */
+export async function ingest(userId: string, text: string, opts: { source: InboxSource; tzOffsetMinutes?: number; externalId?: string; draft?: SmsDraft }) {
+  const hash = normHash(opts.externalId ? `${opts.source}:${opts.externalId}` : text);
+  const existing = (await pool.query(
+    'SELECT * FROM imported_messages WHERE user_id=$1 AND (text_hash=$2 OR ($3::text IS NOT NULL AND external_id=$3))', [userId, hash, opts.externalId ?? null],
+  )).rows[0];
+  let draft: SmsDraft;
+  if (existing) draft = existing.parsed;
+  else if (opts.draft) draft = opts.draft;
+  else {
+    const settings = await getSettings(userId);
+    draft = parseAny(text, await parseContext(userId), { tzOffsetMinutes: opts.tzOffsetMinutes ?? tzOffsetFor(settings.timezone), lang: settings.language });
   }
+  const duplicates = existing?.status === 'imported' ? [] : await findDuplicates(pool, userId, draft);
+  let row = existing;
+  if (!row) {
+    row = (await pool.query(
+      `INSERT INTO imported_messages (user_id, source, raw_text, text_hash, parsed, external_id) VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT DO NOTHING RETURNING *`,
+      [userId, opts.source, text.slice(0, 4000), hash, JSON.stringify(draft), opts.externalId ?? null],
+    )).rows[0];
+    if (!row) row = (await pool.query('SELECT * FROM imported_messages WHERE user_id=$1 AND text_hash=$2', [userId, hash])).rows[0];
+  }
+  return { id: row.id as string, text, source: row.source as InboxSource, status: row.status as string, alreadyImported: !!existing, transactionId: row.transaction_id as string | null, draft, duplicates };
+}
+
+/** Offset in minutes (UTC - local) of an IANA zone right now; used to read local times in SMS. */
+export function tzOffsetFor(tz: string): number {
+  try {
+    const now = new Date();
+    const local = new Date(now.toLocaleString('en-US', { timeZone: tz }));
+    const utc = new Date(now.toLocaleString('en-US', { timeZone: 'UTC' }));
+    return Math.round((utc.getTime() - local.getTime()) / 60000);
+  } catch { return 0; }
+}
+
+export async function importMessages(userId: string, block: string, opts: { source?: 'sms' | 'share' | 'paste'; tzOffsetMinutes?: number }) {
+  const out = [];
+  for (const text of splitMessages(block).slice(0, 100)) out.push(await ingest(userId, text, { source: opts.source ?? 'paste', tzOffsetMinutes: opts.tzOffsetMinutes }));
   return out;
 }
 
 export async function listImported(userId: string, status?: string) {
-  return (await pool.query(
+  const rows = (await pool.query(
     `SELECT id, source, raw_text AS text, parsed AS draft, status, transaction_id AS "transactionId", created_at AS "createdAt"
        FROM imported_messages WHERE user_id=$1 ${status ? 'AND status=$2' : ''} ORDER BY created_at DESC LIMIT 200`,
     status ? [userId, status] : [userId],
   )).rows;
+  for (const r of rows) r.duplicates = r.status === 'pending' ? await findDuplicates(pool, userId, r.draft) : [];
+  return rows;
+}
+
+export async function pendingCount(userId: string): Promise<number> {
+  return (await pool.query("SELECT count(*)::int AS n FROM imported_messages WHERE user_id=$1 AND status='pending'", [userId])).rows[0].n;
+}
+
+export async function getImported(userId: string, id: string) {
+  const r = (await pool.query('SELECT * FROM imported_messages WHERE id=$1 AND user_id=$2', [id, userId])).rows[0];
+  if (!r) throw new NotFound('Message not found');
+  return r;
+}
+
+/** Updates the stored draft (e.g. account/category picked with Telegram buttons). */
+export async function patchDraft(userId: string, id: string, patch: Partial<Draft>) {
+  const r = await getImported(userId, id);
+  const draft = { ...r.parsed, ...patch };
+  draft.missing = (['type', 'amount', 'account', 'category'] as const).filter((k) => !draft[k === 'account' ? 'accountId' : k === 'category' ? 'categoryId' : k]);
+  await pool.query('UPDATE imported_messages SET parsed=$3, updated_at=now() WHERE id=$1 AND user_id=$2', [id, userId, JSON.stringify(draft)]);
+  return draft as SmsDraft;
 }
 
 export async function confirmImported(userId: string, messageId: string, tx: TxInput) {
@@ -235,10 +297,30 @@ export async function confirmImported(userId: string, messageId: string, tx: TxI
     const msg = (await c.query('SELECT * FROM imported_messages WHERE id=$1 AND user_id=$2 FOR UPDATE', [messageId, userId])).rows[0];
     if (!msg) throw new NotFound('Message not found');
     if (msg.status === 'imported') throw new Invalid('This message has already been imported');
-    const id = await createTransaction(userId, { ...tx, source: 'sms' }, c as pg.PoolClient);
+    const id = await createTransaction(userId, { ...tx, source: TX_SOURCE[msg.source as InboxSource] }, c as pg.PoolClient);
     await c.query("UPDATE imported_messages SET status='imported', transaction_id=$2, updated_at=now() WHERE id=$1", [messageId, id]);
     return id;
   });
+}
+
+/** Confirms a pending message using its stored draft (the user pressed "save" in Telegram or "confirm all"). */
+export async function confirmDraft(userId: string, messageId: string) {
+  const msg = await getImported(userId, messageId);
+  const d = msg.parsed as SmsDraft;
+  if (!draftReady(d)) throw new Invalid('Draft is incomplete');
+  return confirmImported(userId, messageId, { type: d.type!, amount: d.amount!, accountId: d.accountId!, categoryId: d.categoryId!, occurredAt: d.occurredAt ?? undefined, comment: d.comment });
+}
+
+/** Confirms every pending draft that is complete and has no possible duplicate. */
+export async function confirmAllReady(userId: string) {
+  const rows = (await pool.query("SELECT id, parsed FROM imported_messages WHERE user_id=$1 AND status='pending' ORDER BY created_at", [userId])).rows;
+  let confirmed = 0; let skipped = 0;
+  const created: Array<{ messageId: string; transactionId: string }> = [];
+  for (const r of rows) {
+    if (!draftReady(r.parsed) || (await findDuplicates(pool, userId, r.parsed)).length) { skipped++; continue; }
+    try { created.push({ messageId: r.id, transactionId: await confirmDraft(userId, r.id) }); confirmed++; } catch { skipped++; }
+  }
+  return { confirmed, skipped, created };
 }
 
 export async function ignoreImported(userId: string, messageId: string) {

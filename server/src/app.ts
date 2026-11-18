@@ -11,6 +11,13 @@ import * as auth from './auth.js';
 import * as L from './services/ledger.js';
 import * as C from './services/catalog.js';
 import * as R from './services/reports.js';
+import * as X from './services/excel.js';
+import { runVoiceCommand } from './services/voice.js';
+import * as TG from './integrations/telegram.js';
+import * as MONO from './integrations/monobank.js';
+import * as HOOK from './integrations/webhook.js';
+import { deleteIntegration } from './integrations/store.js';
+import { IntegrationError } from './integrations/http.js';
 
 type H = (req: Request, res: Response) => Promise<unknown>;
 const h = (fn: H) => (req: Request, res: Response, next: NextFunction) => { fn(req, res).catch(next); };
@@ -66,8 +73,20 @@ export function createApp() {
     res.setHeader('Permissions-Policy', 'microphone=(self), camera=(self)');
     next();
   });
-  app.use(express.json({ limit: '12mb' }));
+  app.use(express.json({ limit: '16mb' }));
   app.use(cookieParser());
+
+  // SMS forwarding (Android forwarder apps, iPhone Shortcuts): token in the URL, JSON {text} or plain text body.
+  app.post('/api/hooks/ingest/:token', express.text({ type: ['text/*'], limit: '64kb' }), h(async (req, res) => {
+    if (HOOK.rateLimited(req.params.token)) return res.status(429).json({ error: 'too_many' });
+    const userId = await HOOK.userForWebhookToken(req.params.token);
+    if (!userId) return res.status(404).json({ error: 'not_found' });
+    const body: any = req.body;
+    const text = typeof body === 'string' ? body : [body?.from ?? body?.sender, body?.text ?? body?.message ?? body?.body].filter(Boolean).join('\n');
+    if (!text || text.length > 4000) return res.status(400).json({ error: 'invalid', message: 'text is required' });
+    const r = await C.ingest(userId, text, { source: 'webhook' });
+    res.json({ ok: true, id: r.id, duplicate: r.alreadyImported, amount: r.draft.amount, currency: r.draft.currency });
+  }));
 
   const api = express.Router();
   api.use(auth.requireJson);
@@ -225,8 +244,72 @@ export function createApp() {
     res.json(await C.importMessages(uid(req), body.text, body));
   }));
   api.get('/import/messages', h(async (req, res) => res.json(await C.listImported(uid(req), typeof req.query.status === 'string' ? req.query.status : undefined))));
-  api.post('/import/messages/:id/confirm', h(async (req, res) => res.status(201).json({ id: await C.confirmImported(uid(req), uuid.parse(req.params.id), txSchema.parse(req.body)) })));
+  const withFiles = async (userId: string, messageId: string, txId: string) => { await TG.attachDraftFiles(userId, messageId, txId).catch((e) => console.error('receipt attach failed', e.message)); return txId; };
+  api.post('/import/messages/:id/confirm', h(async (req, res) => {
+    const id = uuid.parse(req.params.id);
+    res.status(201).json({ id: await withFiles(uid(req), id, await C.confirmImported(uid(req), id, txSchema.parse(req.body))) });
+  }));
   api.post('/import/messages/:id/ignore', h(async (req, res) => { await C.ignoreImported(uid(req), uuid.parse(req.params.id)); res.json({ ok: true }); }));
+
+  api.get('/import/count', h(async (req, res) => res.json({ pending: await C.pendingCount(uid(req)) })));
+  api.post('/import/messages/:id/confirm-draft', h(async (req, res) => {
+    const id = uuid.parse(req.params.id);
+    res.status(201).json({ id: await withFiles(uid(req), id, await C.confirmDraft(uid(req), id)) });
+  }));
+  api.post('/import/confirm-all', h(async (req, res) => {
+    const r = await C.confirmAllReady(uid(req));
+    for (const c of r.created) await withFiles(uid(req), c.messageId, c.transactionId);
+    res.json({ confirmed: r.confirmed, skipped: r.skipped });
+  }));
+
+  // ---------- voice control ----------
+  api.post('/voice/command', h(async (req, res) => {
+    const body = z.object({ text: text(500).min(1), defaultType: z.enum(['income', 'expense']).optional() }).parse(req.body);
+    res.json(await runVoiceCommand(uid(req), body.text, body.defaultType));
+  }));
+
+  // ---------- bank connections ----------
+  api.get('/integrations', h(async (req, res) => res.json({
+    telegram: await TG.telegramStatus(uid(req)), monobank: await MONO.monobankStatus(uid(req)), webhook: await HOOK.webhookStatus(uid(req)),
+  })));
+  api.post('/integrations/telegram', h(async (req, res) => res.json(await TG.configureTelegram(uid(req), z.object({ token: text(200).min(10) }).parse(req.body).token))));
+  api.post('/integrations/telegram/link-code', h(async (req, res) => res.json(await TG.newLinkCode(uid(req)))));
+  api.delete('/integrations/telegram/chats/:chatId', h(async (req, res) => { await TG.unlinkChat(uid(req), z.string().regex(/^-?\d+$/).parse(req.params.chatId)); res.json({ ok: true }); }));
+  api.post('/integrations/monobank', h(async (req, res) => res.json(await MONO.configureMonobank(uid(req), z.object({ token: text(200).min(10) }).parse(req.body).token))));
+  api.put('/integrations/monobank/mapping', h(async (req, res) => res.json(await MONO.setMonobankMapping(uid(req), z.record(z.string(), uuid.nullable()).parse(req.body.mapping ?? {})))));
+  api.post('/integrations/monobank/sync', h(async (req, res) => {
+    const days = z.coerce.number().int().min(1).max(31).optional().parse(req.body.days);
+    MONO.syncMonobank(uid(req), { initialDays: days }).catch(() => {}); // runs in background (API allows 1 request/min)
+    res.status(202).json(await MONO.monobankStatus(uid(req)));
+  }));
+  api.post('/integrations/webhook', h(async (req, res) => res.json({ token: await HOOK.createWebhookToken(uid(req)) })));
+  api.delete('/integrations/:kind', h(async (req, res) => {
+    const kind = z.enum(['telegram', 'monobank', 'webhook']).parse(req.params.kind);
+    if (kind === 'telegram') TG.stopPoller(uid(req));
+    await deleteIntegration(uid(req), kind);
+    res.json({ ok: true });
+  }));
+
+  // ---------- Excel ----------
+  const xlsx = (res: Response, name: string, buf: Buffer) => {
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+    res.send(buf);
+  };
+  api.get('/export/xlsx', h(async (req, res) => {
+    const q = z.object({ from: isoDate, to: isoDate }).parse(req.query);
+    xlsx(res, `groshi-ok-${q.from}_${q.to}.xlsx`, await X.exportReportXlsx(uid(req), q.from, q.to));
+  }));
+  api.get('/import/template.xlsx', h(async (req, res) => xlsx(res, 'groshi-ok-template.xlsx', await X.importTemplateXlsx(uid(req)))));
+  const fileSchema = z.object({ filename: text(200).min(1), dataBase64: z.string().min(4).max(15_000_000), tzOffsetMinutes: z.number().int().min(-900).max(900).optional() });
+  api.post('/import/excel/preview', h(async (req, res) => {
+    const b = fileSchema.parse(req.body);
+    res.json(await X.previewImport(uid(req), b.filename, b.dataBase64, b));
+  }));
+  api.post('/import/excel/commit', h(async (req, res) => {
+    const b = fileSchema.extend({ createMissing: z.boolean().default(false), includeDuplicates: z.boolean().default(false) }).parse(req.body);
+    res.json(await X.commitImport(uid(req), b.filename, b.dataBase64, b));
+  }));
 
   // ---------- export & audit ----------
   api.get('/export/json', h(async (req, res) => {
@@ -254,6 +337,7 @@ export function createApp() {
   // ---------- errors ----------
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof ZodError) return res.status(400).json({ error: 'invalid', message: err.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') });
+    if (err instanceof IntegrationError) return res.status(err.status === 429 ? 429 : 400).json({ error: 'integration', message: err.message });
     if (err instanceof MoneyError || err instanceof L.Invalid) return res.status(400).json({ error: 'invalid', message: err.message });
     if (err instanceof L.NotFound) return res.status(404).json({ error: 'not_found', message: err.message });
     if (err?.code === '23505') return res.status(409).json({ error: 'conflict', message: 'Запис з такою назвою вже існує' });
