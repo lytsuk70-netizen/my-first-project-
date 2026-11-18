@@ -8,6 +8,7 @@ import { Auth } from './screens/Auth';
 import { Entry } from './screens/Entry';
 import { Feed } from './screens/Feed';
 import { Menu } from './screens/Menu';
+import { TalkoShell } from './screens/TalkoMode';
 import { StoreProvider, useStore, type Tab } from './store';
 import type { Settings } from './types';
 
@@ -56,6 +57,10 @@ export function App() {
   const lang = navigator.language.startsWith('en') ? 'en' : 'uk';
   if (!state.user || !state.settings) {
     return <I18nContext.Provider value={{ t: dictionaries[lang], lang }}><Auth setup={state.needsSetup} onDone={load} /></I18nContext.Provider>;
+  }
+  if (state.settings.data_source === 'talko') {
+    const l = state.settings.language ?? 'uk';
+    return <I18nContext.Provider value={{ t: dictionaries[l], lang: l }}><TalkoShell /></I18nContext.Provider>;
   }
   return <StoreProvider settings={state.settings}><Shell /></StoreProvider>;
 }

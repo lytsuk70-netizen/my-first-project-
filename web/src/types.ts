@@ -8,7 +8,7 @@ export interface Account {
 export interface Category { id: string; name: string; type: TxType; icon: string; color: string; parentId: string | null; isArchived: boolean; sortOrder: number; usage: number }
 export interface Project { id: string; name: string; description: string; isArchived: boolean; usage: number }
 export interface Currency { code: string; decimals: number; symbol: string; name_uk: string; name_en: string }
-export interface Settings { base_currency: string; language: 'uk' | 'en'; timezone: string }
+export interface Settings { base_currency: string; language: 'uk' | 'en'; timezone: string; data_source?: 'local' | 'talko' }
 
 export interface FeedItem {
   id: string; kind: 'income' | 'expense' | 'transfer' | 'correction'; type: string; accountId: string; accountName: string; amount: string; currency: string;

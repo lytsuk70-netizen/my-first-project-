@@ -27,8 +27,8 @@ export async function dec(code: string): Promise<number> {
 }
 
 export async function getSettings(userId: string) {
-  const r = await pool.query('SELECT base_currency, language, timezone FROM settings WHERE user_id = $1', [userId]);
-  return (r.rows[0] ?? { base_currency: 'UAH', language: 'uk', timezone: 'Europe/Kyiv' }) as { base_currency: string; language: 'uk' | 'en'; timezone: string };
+  const r = await pool.query('SELECT base_currency, language, timezone, data_source FROM settings WHERE user_id = $1', [userId]);
+  return (r.rows[0] ?? { base_currency: 'UAH', language: 'uk', timezone: 'Europe/Kyiv', data_source: 'local' }) as { base_currency: string; language: 'uk' | 'en'; timezone: string; data_source: 'local' | 'talko' };
 }
 
 async function loadAccount(c: Db, userId: string, id: string, lock = false) {

@@ -12,12 +12,14 @@ import * as L from './services/ledger.js';
 import * as C from './services/catalog.js';
 import * as R from './services/reports.js';
 import * as X from './services/excel.js';
-import { runVoiceCommand } from './services/voice.js';
+import { runVoiceCommand, periodRange } from './services/voice.js';
+import { interpret } from './engine/commands.js';
 import * as TG from './integrations/telegram.js';
 import * as MONO from './integrations/monobank.js';
 import * as HOOK from './integrations/webhook.js';
 import { deleteIntegration } from './integrations/store.js';
 import * as MCP from './integrations/mcp.js';
+import * as TK from './integrations/talko.js';
 import { IntegrationError } from './integrations/http.js';
 
 type H = (req: Request, res: Response) => Promise<unknown>;
@@ -293,6 +295,55 @@ export function createApp() {
     if (kind === 'telegram') TG.stopPoller(uid(req));
     await deleteIntegration(uid(req), kind);
     res.json({ ok: true });
+  }));
+
+  // ---------- TALKO CRM (system of record) ----------
+  api.get('/talko/status', h(async (req, res) => res.json(await TK.talkoStatus(uid(req)))));
+  api.post('/talko/connect', h(async (req, res) => {
+    const b = z.object({ url: text(500).min(8), apiKey: text(500).min(10) }).parse(req.body);
+    res.json(await TK.configureTalko(uid(req), b.url, b.apiKey));
+  }));
+  api.delete('/talko', h(async (req, res) => { await TK.disconnectTalko(uid(req)); res.json({ ok: true }); }));
+  api.get('/talko/accounts', h(async (req, res) => res.json(await TK.accounts(uid(req)))));
+  api.get('/talko/categories', h(async (req, res) => res.json(await TK.categories(uid(req)))));
+  api.get('/talko/projects', h(async (req, res) => res.json(await TK.projects(uid(req)).catch(() => []))));
+  api.get('/talko/transactions', h(async (req, res) => {
+    const q = z.object({ from: isoDate.optional(), to: isoDate.optional(), type: z.enum(['income', 'expense']).optional(), accountId: text(200).optional(),
+      categoryId: text(200).optional(), projectId: text(200).optional(), q: text(100).optional(), max: z.coerce.number().int().min(1).max(5000).optional() }).parse(req.query);
+    res.json(await TK.transactions(uid(req), q));
+  }));
+  api.get('/talko/report', h(async (req, res) => { const q = z.object({ from: isoDate, to: isoDate }).parse(req.query); res.json(await TK.report(uid(req), q.from, q.to)); }));
+  api.post('/talko/transactions', h(async (req, res) => {
+    const b = z.object({ type: z.enum(['income', 'expense']), amount: amount, accountId: text(200).min(1), categoryId: text(200).min(1), projectId: text(200).nullable().optional(),
+      date: text(40).optional(), description: text(500).default(''), counterparty: text(200).optional(), confirmationToken: text(500).optional() }).parse(req.body);
+    const n = b.amount.replace(/\s/g, '').replace(',', '.');
+    if (!/^\d+(\.\d{1,2})?$/.test(n) || Number(n) <= 0) return res.status(400).json({ error: 'invalid', message: 'Невірна сума' });
+    res.json(await TK.addTransaction(uid(req), { ...b, amount: n }, b.confirmationToken));
+  }));
+  // Voice in TALKO mode: the same interpreter, matched against TALKO's accounts and categories.
+  api.post('/talko/voice', h(async (req, res) => {
+    const b = z.object({ text: text(500).min(1), defaultType: z.enum(['income', 'expense']).optional() }).parse(req.body);
+    const [acc, cats] = await Promise.all([TK.accounts(uid(req)), TK.categories(uid(req))]);
+    const s = await L.getSettings(uid(req));
+    const cmd = interpret(b.text, acc.accounts.map((a: any) => ({ id: a.id, name: a.name, currency: a.currency })), cats.map((c: any) => ({ id: c.id, name: c.name, type: c.type })), { lang: s.language, defaultType: b.defaultType });
+    let answer = '';
+    if (cmd.intent === 'balance') {
+      const list = cmd.accountId ? acc.accounts.filter((a: any) => a.id === cmd.accountId) : acc.accounts;
+      answer = list.map((a: any) => `${a.name}: ${a.balance} ${a.currency}`).join('; ');
+    } else if (cmd.intent === 'total') {
+      const today = new Intl.DateTimeFormat('en-CA', { timeZone: s.timezone }).format(new Date());
+      const range = periodRange(cmd.period, today);
+      const r = await TK.report(uid(req), range.from, range.to);
+      const sec = r[cmd.type];
+      const v = cmd.categoryId ? (sec.byCategory.find((c: any) => c.id === cmd.categoryId)?.total ?? '0.00') : sec.total;
+      answer = `${cmd.type === 'expense' ? 'Витрачено' : 'Отримано'} ${v} ${r.baseCurrency} (${range.from} — ${range.to}).`;
+    }
+    res.json({ command: cmd, answer });
+  }));
+  api.post('/talko/transfers', h(async (req, res) => {
+    const b = z.object({ fromAccountId: text(200).min(1), toAccountId: text(200).min(1), amount, amountTo: amount.optional(), description: text(500).optional(), confirmationToken: text(500).optional() }).parse(req.body);
+    if (b.fromAccountId === b.toAccountId) return res.status(400).json({ error: 'invalid', message: 'Рахунки мають відрізнятися' });
+    res.json(await TK.transfer(uid(req), b, b.confirmationToken));
   }));
 
   // ---------- Excel ----------

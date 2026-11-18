@@ -4,6 +4,7 @@ import { ErrorBox, Field, fmtDate } from '../components/ui';
 import { useT } from '../i18n';
 import { money } from '../money';
 import { useAsync, useStore } from '../store';
+import { TalkoConnect } from './TalkoMode';
 
 /** Bank connections: Telegram bot, monobank personal API, SMS forwarding webhook. */
 export function Banks() {
@@ -15,6 +16,8 @@ export function Banks() {
   if (!st.data) return <div className="empty">{st.error ?? '…'}</div>;
   return (
     <>
+      <div className="section-title">🔗 CRM TALKO</div>
+      <TalkoConnect />
       <TelegramCard s={st.data.telegram} refresh={refresh} />
       <div className="section-title">{t.monoTitle}</div>
       <MonoCard s={st.data.monobank} refresh={refresh} />
