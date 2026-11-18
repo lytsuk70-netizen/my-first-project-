@@ -17,6 +17,7 @@ import * as TG from './integrations/telegram.js';
 import * as MONO from './integrations/monobank.js';
 import * as HOOK from './integrations/webhook.js';
 import { deleteIntegration } from './integrations/store.js';
+import * as MCP from './integrations/mcp.js';
 import { IntegrationError } from './integrations/http.js';
 
 type H = (req: Request, res: Response) => Promise<unknown>;
@@ -75,6 +76,9 @@ export function createApp() {
   });
   app.use(express.json({ limit: '16mb' }));
   app.use(cookieParser());
+
+  // Claude connector (MCP over Streamable HTTP). Token in the path (claude.ai custom connector) or as Bearer.
+  app.all(['/mcp', '/mcp/:token'], h(async (req, res) => { await MCP.handleMcp(req, res); }));
 
   // SMS forwarding (Android forwarder apps, iPhone Shortcuts): token in the URL, JSON {text} or plain text body.
   app.post('/api/hooks/ingest/:token', express.text({ type: ['text/*'], limit: '64kb' }), h(async (req, res) => {
@@ -270,7 +274,7 @@ export function createApp() {
 
   // ---------- bank connections ----------
   api.get('/integrations', h(async (req, res) => res.json({
-    telegram: await TG.telegramStatus(uid(req)), monobank: await MONO.monobankStatus(uid(req)), webhook: await HOOK.webhookStatus(uid(req)),
+    telegram: await TG.telegramStatus(uid(req)), monobank: await MONO.monobankStatus(uid(req)), webhook: await HOOK.webhookStatus(uid(req)), mcp: await MCP.mcpStatus(uid(req)),
   })));
   api.post('/integrations/telegram', h(async (req, res) => res.json(await TG.configureTelegram(uid(req), z.object({ token: text(200).min(10) }).parse(req.body).token))));
   api.post('/integrations/telegram/link-code', h(async (req, res) => res.json(await TG.newLinkCode(uid(req)))));
@@ -283,8 +287,9 @@ export function createApp() {
     res.status(202).json(await MONO.monobankStatus(uid(req)));
   }));
   api.post('/integrations/webhook', h(async (req, res) => res.json({ token: await HOOK.createWebhookToken(uid(req)) })));
+  api.post('/integrations/mcp', h(async (req, res) => res.json({ token: await MCP.createMcpToken(uid(req)) })));
   api.delete('/integrations/:kind', h(async (req, res) => {
-    const kind = z.enum(['telegram', 'monobank', 'webhook']).parse(req.params.kind);
+    const kind = z.enum(['telegram', 'monobank', 'webhook', 'mcp']).parse(req.params.kind);
     if (kind === 'telegram') TG.stopPoller(uid(req));
     await deleteIntegration(uid(req), kind);
     res.json({ ok: true });

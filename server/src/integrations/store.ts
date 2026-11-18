@@ -1,7 +1,7 @@
 import { pool } from '../db.js';
 import { decrypt, encrypt } from '../secrets.js';
 
-export type Kind = 'telegram' | 'monobank' | 'webhook';
+export type Kind = 'telegram' | 'monobank' | 'webhook' | 'mcp';
 
 export async function getIntegration(userId: string, kind: Kind) {
   return (await pool.query('SELECT * FROM integrations WHERE user_id=$1 AND kind=$2', [userId, kind])).rows[0] ?? null;

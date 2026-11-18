@@ -279,3 +279,33 @@ test('CSV import (own export format) and template download', async () => {
   const wb = new ExcelJS.Workbook(); await wb.xlsx.load(t.data);
   assert.equal(wb.worksheets[0].getRow(1).getCell(4).value, 'Сума');
 });
+
+// ---------- Claude connector (MCP) ----------
+test('Claude connector: token auth, preview first, write only with confirmed=true', async () => {
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+  const bad = await fetch(`${base}/mcp/not-a-valid-token-xxxxxxxxxx`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: '{}' });
+  assert.equal(bad.status, 401);
+  const { token } = await ok('POST', '/integrations/mcp');
+  const client = new Client({ name: 'test', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp/${token}`)));
+  const tools = (await client.listTools()).tools.map((t) => t.name);
+  assert.ok(['get_balances', 'add_transaction', 'transfer', 'get_report', 'list_inbox'].every((n) => tools.includes(n)));
+  const txt = (r: any) => r.content[0].text as string;
+  const before = await balances();
+  const preview = await client.callTool({ name: 'add_transaction', arguments: { type: 'expense', amount: '5000', account: 'Приват', category: 'Будівництво' } });
+  assert.match(txt(preview), /ПОПЕРЕДНІЙ ПЕРЕГЛЯД/);
+  assert.deepEqual(await balances(), before);
+  const saved = await client.callTool({ name: 'add_transaction', arguments: { type: 'expense', amount: '5000', account: 'Приват', category: 'Будівництво', confirmed: true } });
+  assert.match(txt(saved), /Записано/);
+  assert.equal((await balances())['Privat UAH'], (Number(before['Privat UAH']) - 5000).toFixed(2));
+  const unknownCat = await client.callTool({ name: 'add_transaction', arguments: { type: 'expense', amount: '1', account: 'Приват', category: 'Космос' } });
+  assert.equal(unknownCat.isError, true);
+  assert.match(txt(unknownCat), /Яку статтю обрати/);
+  const noRate = await client.callTool({ name: 'transfer', arguments: { from_account: 'Bank USD', to_account: 'Приват', amount: '100', confirmed: true } });
+  assert.equal(noRate.isError, true);
+  assert.match(txt(noRate), /потрібен курс/);
+  const bal = await client.callTool({ name: 'get_balances', arguments: { currency: 'USD' } });
+  assert.match(txt(bal), /Bank USD/);
+  await client.close();
+});
