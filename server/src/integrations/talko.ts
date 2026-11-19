@@ -37,10 +37,23 @@ async function connection(userId: string) {
   return c;
 }
 
+/** TALKO often prefixes the JSON with a human sentence ("Готово. {...}"); take the JSON part. */
+export function parseLoose(text: string): Json {
+  try { return JSON.parse(text); } catch { /* fall through */ }
+  for (const open of ['{', '[']) {
+    const i = text.indexOf(open);
+    const j = text.lastIndexOf(open === '{' ? '}' : ']');
+    if (i >= 0 && j > i) {
+      try { const v = JSON.parse(text.slice(i, j + 1)); return Array.isArray(v) ? { items: v } : v; } catch { /* next */ }
+    }
+  }
+  return { message: text };
+}
+
 function parse(result: any): Json {
   const text = (result?.content ?? []).filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n');
   let data: Json;
-  try { data = JSON.parse(text); } catch { data = { message: text }; }
+  data = parseLoose(text);
   if (result?.isError || data.error || (data.code && data.message && data.ok === false)) {
     const msg = [data.message ?? data.error ?? text, data.next].filter(Boolean).join(' ');
     throw new IntegrationError(`TALKO: ${String(msg).slice(0, 500)}`);
