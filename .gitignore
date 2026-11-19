@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.log
+groshi_ok.json
+groshi_ok.tmp
+groshi_ok_*.csv
+__pycache__/
+.app-secret
