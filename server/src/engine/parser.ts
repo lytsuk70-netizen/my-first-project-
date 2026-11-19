@@ -153,6 +153,18 @@ export function matchCategory(text: string, categories: ParseCategory[], type: '
       if (words(c.name).some((w) => nameStems.some((s) => stemMatch(w, s)))) scores.set(c.id, (scores.get(c.id) ?? 0) + 2);
     }
   }
+  // «продукти» should prefer «Продукти» over «Розробка продукту»: penalise name words nobody said
+  for (const [id, sc] of scores) {
+    const c = pool.find((x) => x.id === id);
+    if (!c || sc >= 10) continue;
+    let miss = 0;
+    for (const w of words(c.name)) {
+      if (/^\d+$/.test(w) || w.length < 3 || GENERIC_NAME_WORDS.has(w)) continue;
+      const stem = w.length > 5 ? w.slice(0, Math.max(4, w.length - 2)) : w;
+      if (!toks.some((t) => stemMatch(t, stem))) miss++;
+    }
+    scores.set(id, sc - miss * 0.5);
+  }
   const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1]);
   if (!ranked.length) return { id: null as string | null, ambiguous: false, usedTokens };
   const ambiguous = ranked.length > 1 && ranked[0][1] === ranked[1][1];
