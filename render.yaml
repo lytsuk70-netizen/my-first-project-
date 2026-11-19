@@ -1,0 +1,17 @@
+# Render Blueprint: one free web service built from the Dockerfile.
+# The database is Neon (external); DATABASE_URL is entered once in the Render dashboard.
+services:
+  - type: web
+    name: groshi-ok
+    runtime: docker
+    plan: free
+    region: frankfurt
+    branch: main
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_SECRET
+        generateValue: true
