@@ -132,7 +132,10 @@ const TYPE_MAP: Record<string, string> = { cash: 'cash', bank: 'bank', card: 'ca
  * TALKO_ENTITY_IDS). Used to show the owner's personal contour without company cash desks.
  */
 function entityFilter(): Set<string> | null {
-  const ids = (process.env.TALKO_ENTITY_IDS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  // default: Юрій's personal contour «Гроші Окей» + «ФОП Луцюк ЮП ПП»; TALKO_ENTITY_IDS=all disables the filter
+  const raw = process.env.TALKO_ENTITY_IDS ?? 'hm3HL8FgqM1RHcr9hH8L,rdXfhqXyKQ9bmzOG1hC2';
+  if (raw.trim().toLowerCase() === 'all') return null;
+  const ids = raw.split(',').map((x) => x.trim()).filter(Boolean);
   return ids.length ? new Set(ids) : null;
 }
 
