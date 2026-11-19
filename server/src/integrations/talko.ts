@@ -127,13 +127,49 @@ export function money(n: unknown, currency: string): string {
 
 const TYPE_MAP: Record<string, string> = { cash: 'cash', bank: 'bank', card: 'card', deposit: 'savings', savings: 'savings', credit: 'debt', loan: 'debt' };
 
-export async function accounts(userId: string) {
+/**
+ * Optional filter: only accounts of these TALKO legal entities (comma-separated entity ids in
+ * TALKO_ENTITY_IDS). Used to show the owner's personal contour without company cash desks.
+ */
+function entityFilter(): Set<string> | null {
+  const ids = (process.env.TALKO_ENTITY_IDS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  return ids.length ? new Set(ids) : null;
+}
+
+async function rawAccounts(userId: string) {
   const r = await talko(userId, 'talko_list_finance_accounts', { activeOnly: true });
+  const only = entityFilter();
+  const list: Json[] = (r.accounts ?? []).filter((a: Json) => !only || only.has(String(a.entityId ?? a.legalEntityId ?? '')));
+  return { r, list, filtered: !!only };
+}
+
+/** Account ids visible in the app (null = no filter). */
+export async function visibleAccountIds(userId: string): Promise<Set<string> | null> {
+  if (!entityFilter()) return null;
+  const { list } = await rawAccounts(userId);
+  return new Set(list.map((a) => String(a.id)));
+}
+
+export async function accounts(userId: string) {
+  const { r, list, filtered } = await rawAccounts(userId);
+  const base = r.baseCurrency ?? 'UAH';
+  let totalsByCurrency: Record<string, string>;
+  let totalBase: string | null;
+  if (filtered) {
+    const sums = new Map<string, number>();
+    for (const a of list) { const c = a.currency ?? 'UAH'; sums.set(c, (sums.get(c) ?? 0) + Math.round(Number(a.balance ?? 0) * 10 ** dec(c))); }
+    totalsByCurrency = Object.fromEntries([...sums.entries()].map(([c, v]) => [c, money(v / 10 ** dec(c), c)]));
+    // a total across currencies needs rates; show it only when everything is in the base currency
+    totalBase = [...sums.keys()].every((c) => c === base) ? (totalsByCurrency[base] ?? money(0, base)) : null;
+  } else {
+    totalsByCurrency = Object.fromEntries(Object.entries(r.totalsByCurrency ?? {}).map(([c, v]) => [c, money(v, c)]));
+    totalBase = r.totalBase === undefined || r.totalBase === null ? null : money(r.totalBase, base);
+  }
   return {
-    baseCurrency: r.baseCurrency ?? 'UAH',
-    totalsByCurrency: Object.fromEntries(Object.entries(r.totalsByCurrency ?? {}).map(([c, v]) => [c, money(v, c)])),
-    totalBase: r.totalBase === undefined || r.totalBase === null ? null : money(r.totalBase, r.baseCurrency ?? 'UAH'),
-    accounts: (r.accounts ?? []).map((a: Json) => ({
+    baseCurrency: base,
+    totalsByCurrency,
+    totalBase,
+    accounts: list.map((a: Json) => ({
       id: a.id, name: a.name, type: TYPE_MAP[a.type] ?? 'other', currency: a.currency ?? 'UAH',
       balance: money(a.balance, a.currency ?? 'UAH'), initialBalance: money(a.openingBalance ?? 0, a.currency ?? 'UAH'),
     })),
@@ -166,6 +202,11 @@ export async function transactions(userId: string, q: TxQuery) {
     if (!r.hasMore || !r.nextCursor) break;
     if (rows.length >= max) { complete = false; break; }
     cursor = r.nextCursor;
+  }
+  const visible = await visibleAccountIds(userId);
+  if (visible) {
+    const keep = rows.filter((t) => visible.has(String(t.accountId)));
+    rows.length = 0; rows.push(...keep);
   }
   rows.sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)));
   return {

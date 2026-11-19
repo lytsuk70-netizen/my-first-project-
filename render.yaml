@@ -15,3 +15,6 @@ services:
         sync: false
       - key: APP_SECRET
         generateValue: true
+      # Only personal accounts in the app: TALKO legal entities «Гроші Окей» and «ФОП Луцюк ЮП ПП»
+      - key: TALKO_ENTITY_IDS
+        value: hm3HL8FgqM1RHcr9hH8L,rdXfhqXyKQ9bmzOG1hC2
