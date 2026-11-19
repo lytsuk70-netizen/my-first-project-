@@ -61,7 +61,11 @@ export function accountMentions(text: string, accounts: ParseAccount[]) {
     const index = tl.findIndex((t) => stems.some((s) => t.startsWith(s)));
     if (index >= 0) out.push({ id: a.id, index, prev: index > 0 ? toks[index - 1] : '' });
   }
-  return out.sort((a, b) => a.index - b.index);
+  // the same word can hit «Моно» and «Деп Моно»: keep the account with the fewest extra words
+  const extra = (id: string) => words(accounts.find((a) => a.id === id)?.name ?? '').length;
+  const byIndex = new Map<number, { id: string; index: number; prev: string }>();
+  for (const m of out) { const cur = byIndex.get(m.index); if (!cur || extra(m.id) < extra(cur.id)) byIndex.set(m.index, m); }
+  return [...byIndex.values()].sort((a, b) => a.index - b.index);
 }
 
 export function interpret(text: string, accounts: ParseAccount[], categories: ParseCategory[], opts: { lang?: 'uk' | 'en'; defaultType?: 'income' | 'expense' } = {}): Command {
@@ -93,7 +97,7 @@ export function interpret(text: string, accounts: ParseAccount[], categories: Pa
   }
 
   // 2) questions: balance / totals
-  if (has(toks, BALANCE) && (isQuestion || toks.length <= 4)) {
+  if ((has(toks, BALANCE) && (isQuestion || toks.length <= 4)) || (isQuestion && !amounts.length && !has(toks, SPENT) && !has(toks, EARNED) && accountMentions(text, accounts).length)) {
     const m = accountMentions(text, accounts);
     return { intent: 'balance', accountId: m.length === 1 ? m[0].id : null };
   }

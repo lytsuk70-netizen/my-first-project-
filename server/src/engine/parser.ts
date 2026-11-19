@@ -61,6 +61,13 @@ const INCOME_WORDS = ['отрима', 'заробі', 'зароби', 'наді�
 
 /** keyword stem -> category name stem */
 const CATEGORY_SYNONYMS: Array<[string[], string[]]> = [
+  // Юрій's known recipients (project rules)
+  [['таврі', 'tavri'], ['продукт']],
+  [['кондитер', 'kaviarn', 'doppio', 'доппіо', 'небесн', 'мигдал'], ['кафе', 'ресторан']],
+  [['mastak', 'мастак', 'будмагаз', 'budmahaz', 'novapay', 'новапей'], ['житл']],
+  [['жасмін', 'jasmin'], ['хімі']],
+  [['zeekr', 'зікр', 'зікер', 'автомий', 'мийк'], ['авто']],
+  [['силмед', 'сілмед', 'silmed'], ["здоров"]],
   [['ресторан', 'кафе', "кав'ярн", 'кав', 'бар', 'піц', 'суші', 'обід', 'вечер', 'сніданок', 'restaurant', 'cafe', 'coffee', 'lunch', 'dinner', 'mcdonald', 'макдонал', 'kfc', 'starbucks'], ['ресторан', 'restaurant', 'кафе']],
   [['продукт', 'їж', 'їда', 'супермаркет', 'атб', 'atb', 'сільпо', 'silpo', 'novus', 'новус', 'ашан', 'auchan', 'фора', 'fora', 'varus', 'варус', 'metro', 'food', 'grocer', 'продовол'], ['їж', 'food', 'продукт', 'харч']],
   [['таксі', 'taxi', 'uber', 'bolt', 'уклон', 'uklon', 'бензин', 'пальн', 'заправ', 'wog', 'окко', 'okko', 'socar', 'метро', 'автобус', 'маршрут', 'проїзд', 'парков', 'parking', 'fuel', 'transport', 'потяг', 'укрзалізн', 'train', 'квиток'], ['транспорт', 'transport', 'авто']],
@@ -105,14 +112,28 @@ function stemMatch(token: string, stem: string): boolean {
   return t.startsWith(s) || translit(t).startsWith(translit(s));
 }
 
+/** Construction objects spoken as «ПВ-5», «пв 5», «PV5». */
+export const OBJECT_CODE_RE = /(?<!\p{L})(пв|pv)[\s-]?(\d{1,2})(?!\d)/giu;
+/** Words too generic to identify a category by themselves («Витрати ПВ-5», «Особисті доходи»). */
+const GENERIC_NAME_WORDS = new Set(['витрати', 'витрат', 'особисті', 'особисті', 'доходи', 'дохід', 'послуги', 'інші', 'інше', 'інший', 'надходження', 'expenses', 'income', 'other']);
+
 export function matchCategory(text: string, categories: ParseCategory[], type: 'income' | 'expense' | null) {
-  const toks = words(text);
   const pool = categories.filter((c) => !c.is_archived && (!type || c.type === type));
   const scores = new Map<string, number>();
   const usedTokens = new Set<string>();
+  // 0) object codes like «ПВ-5» pick the object's category directly
+  for (const m of norm(text).matchAll(OBJECT_CODE_RE)) {
+    const code = `пв-${m[2]}`;
+    for (const c of pool) {
+      const n = norm(c.name).replace(/pv/g, 'пв').replace(/пв\s*-?\s*(\d)/g, 'пв-$1');
+      if (new RegExp(`(?<!\\p{L})${code}(?!\\d)`, 'u').test(n)) scores.set(c.id, (scores.get(c.id) ?? 0) + 10);
+    }
+  }
+  const toks = words(text.replace(OBJECT_CODE_RE, ' ')).filter((t) => !/^\d+$/.test(t));
   // 1) direct category-name match (strong)
   for (const c of pool) {
     for (const nameWord of words(c.name)) {
+      if (/^\d+$/.test(nameWord) || nameWord.length < 2 || GENERIC_NAME_WORDS.has(nameWord)) continue;
       const stem = nameWord.length > 5 ? nameWord.slice(0, Math.max(4, nameWord.length - 2)) : nameWord;
       for (const t of toks) {
         if (stemMatch(t, stem)) {
@@ -163,10 +184,21 @@ export function matchAccounts(text: string, accounts: ParseAccount[]) {
     for (const kw of (a.sms_keywords ?? '').split(/[,;]/).map((s) => s.trim()).filter(Boolean)) {
       if (norm(text).includes(norm(kw))) { score += 4; }
     }
-    if (score > 0) hits.set(a.id, score);
+    if (score > 0) {
+      // «Деп Моно» should lose to «Моно» when only «моно» was said: penalise name words nobody mentioned
+      for (const w of words(a.name)) {
+        if (w.length < 3 || /^(uah|usd|eur|pln|gbp|грн)$/i.test(w)) continue;
+        const wt = translit(w);
+        if (!tl.some((t) => t.startsWith(wt) || (wt.length >= 4 && t.length >= 4 && wt.startsWith(t)))) score -= 2;
+      }
+      hits.set(a.id, Math.max(score, 1));
+    }
   }
-  const ranked = [...hits.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
-  return { ranked, usedTokens };
+  const sorted = [...hits.entries()].sort((a, b) => b[1] - a[1]);
+  const ranked = sorted.map(([id]) => id);
+  /** the single best account when it clearly beats the rest */
+  const best = sorted.length === 1 || (sorted.length > 1 && sorted[0][1] > sorted[1][1]) ? sorted[0][0] : null;
+  return { ranked, usedTokens, best };
 }
 
 export function detectCurrency(text: string): string | null {
@@ -176,6 +208,7 @@ export function detectCurrency(text: string): string | null {
 
 /** Extracts amounts in major units as decimal strings, e.g. "1,250" -> "1250", "2 тисячі" -> "2000", "99,90" -> "99.90". */
 export function extractAmounts(text: string): string[] {
+  text = text.replace(OBJECT_CODE_RE, ' ');
   const out: string[] = [];
   const re = /(?<![\d*])(\d{1,3}(?:[  ]\d{3})+|\d{1,3}(?:,\d{3})+(?![\d,])|\d+)(?:[.,](\d{1,2}))?(?!\d)\s*(тис\p{L}*|k\b|thousand)?/giu;
   for (const m of text.matchAll(re)) {
@@ -241,6 +274,7 @@ export function parseVoice(
     if (sameCur.length) accRanked = sameCur;
   }
   if (accRanked.length === 1) accountId = accRanked[0];
+  else if (accRanked.length > 1 && accMatch.best && accRanked.includes(accMatch.best)) accountId = accMatch.best;
   else if (accRanked.length > 1) {
     questions.push(q('Який рахунок використати?', 'Which account should be used?'));
   }
