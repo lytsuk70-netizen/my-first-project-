@@ -3,7 +3,7 @@
  * TALKO and every new operation is written to TALKO (with TALKO's own confirmation step).
  */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { del, get, post, qs } from '../api';
+import { api, del, get, post, qs } from '../api';
 import { Bars, Donut } from '../components/Charts';
 import { ErrorBox, Field, Icons, Sheet, fmtDay } from '../components/ui';
 import { useT } from '../i18n';
@@ -149,65 +149,227 @@ function TxSheet({ type, amount, accountId, categoryId, comment, onClose, title 
 
 // ---------- expense / income entry ----------
 
+/** Emoji icon for a TALKO category name (Деньги ОК style colored icons). */
+export function catIcon(name: string): string {
+  const n = name.toLowerCase();
+  const map: Array<[RegExp, string]> = [
+    [/пв-?\s*\d|будів|об.?єкт/, '🏗️'], [/продукт|їж/, '🛒'], [/кафе|ресторан/, '☕'], [/авто/, '🚗'], [/транспорт|таксі/, '🚌'],
+    [/житл|дім|оренд|комунал/, '🏠'], [/здоров|аптек|лік/, '💊'], [/сім/, '👨‍👩‍👧'], [/хімі/, '🧴'], [/тварин/, '🐾'],
+    [/відряд/, '🧳'], [/дивід/, '💰'], [/дохід|доход|надходж|виручк/, '💵'], [/камінь/, '💎'], [/подар/, '🎁'], [/податк/, '🧾'],
+    [/зарплат/, '👷'], [/реклам|маркет/, '📣'], [/навчан|освіт/, '📚'], [/банк|комісі|еквайр/, '🏦'], [/інвест/, '📈'], [/повернен|списан/, '↩️'],
+  ];
+  return map.find(([re]) => re.test(n))?.[1] ?? '•';
+}
+
+/** Categories shown as big buttons: the personal ones and construction objects; the rest sit behind «Всі статті». */
+function mainCategories(cats: TCategory[], type: 'income' | 'expense') {
+  const own = cats.filter((c) => c.type === type);
+  const personalRoot = own.filter((c) => !c.parentId && /особист/i.test(c.name)).map((c) => c.id);
+  const main = own.filter((c) => (c.parentId && personalRoot.includes(c.parentId)) || /пв-?\s*\d/i.test(c.name));
+  return main.length ? main : own.filter((c) => !c.parentId);
+}
+
+/** Folders: categories that contain other categories, plus empty folders created in this app. */
+function folderIds(cats: TCategory[]): Set<string> {
+  const ids = new Set(cats.filter((c) => c.parentId).map((c) => c.parentId as string));
+  try { for (const id of JSON.parse(localStorage.getItem('gok.folders') ?? '[]')) ids.add(id); } catch { /* ignore */ }
+  return ids;
+}
+function rememberFolder(id: string) {
+  try { const a = JSON.parse(localStorage.getItem('gok.folders') ?? '[]'); if (!a.includes(id)) localStorage.setItem('gok.folders', JSON.stringify([...a, id])); } catch { /* ignore */ }
+}
+/** The personal root («Особисті витрати» / «Особисті доходи») that new folders go under. */
+function personalRoot(cats: TCategory[], type: 'income' | 'expense') {
+  return cats.find((c) => c.type === type && !c.parentId && /особист/i.test(c.name)) ?? null;
+}
+
+/** Calculator line «1200+350×2» → "1900" (×÷ before +−). Returns null while incomplete. */
+function evalExpr(expr: string): string | null {
+  const toks = expr.replace(/,/g, '.').match(/\d+(?:\.\d+)?|[+\-×÷]/g);
+  if (!toks || /[+\-×÷]$/.test(expr)) return null;
+  const out: Array<number | string> = [];
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t === '×' || t === '÷') { const a = out.pop() as number; const b = Number(toks[++i]); out.push(t === '×' ? a * b : b ? a / b : NaN); }
+    else out.push(/[+\-]/.test(t) ? t : Number(t));
+  }
+  let r = out[0] as number;
+  for (let i = 1; i < out.length; i += 2) r = out[i] === '+' ? r + (out[i + 1] as number) : r - (out[i + 1] as number);
+  if (!Number.isFinite(r)) return null;
+  return String(Math.round(r * 100) / 100).replace('.', ',');
+}
+
+const PAGE = 4;
+
 function TEntry({ type }: { type: 'income' | 'expense' }) {
   const { t } = useT();
   const { accounts, categories, version } = useTalko();
-  const [amount, setAmount] = useState('');
+  const [expr, setExpr] = useState('');
   const [accountId, setAccountId] = useState(() => { try { return localStorage.getItem('gok.talko.acc.' + type) ?? ''; } catch { return ''; } });
+  const [page, setPage] = useState(0);
   const [open, setOpen] = useState<string | null>(null);
+  const [all, setAll] = useState(false);
+  const [folder, setFolder] = useState<string | null>(null);
   const [voice, setVoice] = useState(false);
   useEffect(() => { if (accounts.length && !accounts.some((a) => a.id === accountId)) setAccountId(accounts[0].id); }, [accounts, accountId]);
   const today = useAsyncT(() => get('/talko/transactions' + qs({ from: todayISO(), to: todayISO(), type })), [version, type]);
-  const color = type === 'expense' ? 'var(--expense)' : 'var(--income)';
-  const press = (k: string) => setAmount((a) => (k === '⌫' ? a.slice(0, -1) : k === ',' ? (a.includes(',') ? a : (a || '0') + ',') : a.includes(',') && a.split(',')[1].length >= 2 ? a : a.length >= 12 ? a : a === '0' ? k : a + k));
-  const roots = categories.filter((c) => c.type === type);
-  const account = accounts.find((a) => a.id === accountId);
+  const exp = type === 'expense';
+  const amount = /[+\-×÷]/.test(expr) ? (evalExpr(expr) ?? '') : expr;
+  const hasAmount = /[1-9]/.test(amount);
+  const press = (k: string) => setExpr((a) => {
+    if (k === '⌫') return a.slice(0, -1);
+    if (k === '=') return evalExpr(a) ?? a;
+    if ('+-×÷'.includes(k)) return !a ? a : /[+\-×÷]$/.test(a) ? a.slice(0, -1) + k : a + k;
+    const last = a.split(/[+\-×÷]/).pop() ?? '';
+    if (k === ',') return last.includes(',') ? a : a + (last ? ',' : '0,');
+    if (last.includes(',') && last.split(',')[1].length >= 2) return a;
+    if (a.length >= 24) return a;
+    return last === '0' ? a.slice(0, -1) + k : a + k;
+  });
+  const pages = Math.max(1, Math.ceil(accounts.length / PAGE));
+  const shown = accounts.slice(page * PAGE, page * PAGE + PAGE);
+  const folders = folderIds(categories);
+  const cats = folder ? categories.filter((c) => c.parentId === folder) : mainCategories(categories, type).filter((c) => !c.parentId || !folders.has(c.parentId) || !mainCategories(categories, type).some((m) => m.id === c.parentId));
+  const folderName = folder ? categories.find((c) => c.id === folder)?.name : null;
   const todayTotal = (today.data?.items ?? []).reduce((s: Record<string, number>, x: TTx) => ({ ...s, [x.currency]: Math.round(((s[x.currency] ?? 0) + Number(x.amount)) * 100) / 100 }), {});
+  const totalTxt = Object.entries(todayTotal).map(([c, v]) => money((v as number).toFixed(2), c)).join(' + ') || money('0', 'UAH');
+  const pick = (id: string) => {
+    if (folders.has(id) && categories.some((c) => c.parentId === id)) { setAll(false); setFolder(id); return; }
+    if (!hasAmount) return; setAll(false); setOpen(id);
+  };
   return (
-    <>
-      <div className="topbar">
-        <h1 style={{ color }}>{type === 'expense' ? t.expenses : t.income}</h1>
-        <div style={{ textAlign: 'right' }}>
-          <div className="faint">{type === 'expense' ? t.todayExpenses : t.todayIncome}</div>
-          <div className="num" style={{ fontWeight: 800, color }}>{Object.entries(todayTotal).map(([c, v]) => money((v as number).toFixed(2), c)).join(' + ') || '0'}</div>
-        </div>
-        <button className="icon-btn" onClick={() => setVoice(true)} aria-label={t.voice}>{Icons.mic}</button>
+    <div className={'m-entry ' + (exp ? 'exp' : 'inc')}>
+      <div className="m-head">
+        <button className="m-hbtn" onClick={() => setVoice(true)} aria-label={t.voice}>{Icons.mic}</button>
+        <div className="m-title">{exp ? t.expenses : t.income}</div>
+        <span className="m-hbtn" />
       </div>
-      <div className="entry-grid">
-        <div className="entry-left">
-          <div className={'amount-display num' + (amount ? '' : ' placeholder')} style={amount ? { color } : undefined}>{amount || '0'}<span className="cur">{account?.currency}</span></div>
-          <div className="chips">
-            {accounts.map((a) => (
-              <button key={a.id} className={'acc-chip' + (a.id === accountId ? ' on' : '') + (type === 'income' ? ' income' : '')} onClick={() => { setAccountId(a.id); try { localStorage.setItem('gok.talko.acc.' + type, a.id); } catch { /* ignore */ } }}>
-                <div className="n ellipsis">{a.name}</div><div className="b num">{money(a.balance, a.currency)}</div>
+      <div className={'m-amount' + (expr ? '' : ' ph')}>
+        <span className="m-amount-txt num">{expr ? expr : t.enterAmount}</span>
+        {expr && /[+\-×÷]/.test(expr) && amount && <span className="m-amount-res num">= {amount}</span>}
+        {expr && <button className="m-clear" onClick={() => setExpr('')} aria-label="Очистити">✕</button>}
+      </div>
+      <div className="m-accs">
+        <div className="m-acc-grid">
+          {shown.map((a) => (
+            <button key={a.id} className={'m-acc' + (a.id === accountId ? ' on' : '')} onClick={() => { setAccountId(a.id); try { localStorage.setItem('gok.talko.acc.' + type, a.id); } catch { /* ignore */ } }}>
+              <span className="n ellipsis">{a.name}</span><span className="b num">{money(a.balance, a.currency)}</span>
+            </button>
+          ))}
+        </div>
+        {pages > 1 && <button className="m-acc-next" onClick={() => setPage((page + 1) % pages)} aria-label="Інші рахунки">›</button>}
+      </div>
+      <div className="m-strip">{exp ? 'Витрачено сьогодні' : 'Отримано сьогодні'}: <b className="num">{totalTxt}</b></div>
+      <div className="m-mid">
+        {hasAmount ? (
+          <div className="m-cats">
+            {folder
+              ? <button className="m-cat" onClick={() => setFolder(null)}><span className="ic all">‹</span><span className="lbl">Назад</span></button>
+              : <button className="m-cat" onClick={() => setAll(true)}><span className="ic all">☰</span><span className="lbl">Всі статті</span></button>}
+            {cats.map((c) => (
+              <button key={c.id} className="m-cat" onClick={() => pick(c.id)}>
+                <span className={'ic' + (folders.has(c.id) ? ' folder' : '')}>{folders.has(c.id) ? '📁' : catIcon(c.name)}</span>
+                <span className="lbl">{c.name.replace(/^Витрати\s+/i, '')}</span>
+                {folderName && <span className="sub">{folderName}</span>}
               </button>
             ))}
           </div>
-          <div className="keypad">
-            {['1', '2', '3', '4', '5', '6', '7', '8', '9', ',', '0', '⌫'].map((k) => <button key={k} onClick={() => press(k)} aria-label={k === '⌫' ? 'Backspace' : k}>{k === '⌫' ? <span style={{ display: 'grid', placeItems: 'center' }}>{Icons.backspace}</span> : k}</button>)}
-          </div>
-        </div>
-        <div>
-          <div className="section-title">{/[1-9]/.test(amount) ? t.chooseCategory : t.category}</div>
-          <div className="cat-grid">
-            {roots.map((c, i) => (
-              <button key={c.id} className="cat-btn" disabled={!/[1-9]/.test(amount)} onClick={() => setOpen(c.id)}>
-                <span className="ic" style={{ width: 40, height: 40, background: (c.parentId ? '#8e8e93' : PALETTE[i % PALETTE.length]) + '33', color: c.parentId ? '#8e8e93' : PALETTE[i % PALETTE.length], fontWeight: 700 }}>{c.name.slice(0, 1)}</span>
-                <span className="lbl">{c.name}</span>
-              </button>
-            ))}
-          </div>
-          <div className="section-title">{t.today}</div>
-          <TxList items={today.data?.items ?? []} />
+        ) : (
+          <TxList items={today.data?.items ?? []} compact />
+        )}
+      </div>
+      <div className="m-pad">
+        <div className="m-ops">{['÷', '×', '-', '+', '='].map((k) => <button key={k} onClick={() => press(k)}>{k === '-' ? '−' : k}</button>)}</div>
+        <div className="m-keys">
+          {[['1', ''], ['2', 'АБВГ'], ['3', 'ДЕЖЗ'], ['4', 'ИЙКЛ'], ['5', 'МНОП'], ['6', 'РСТУ'], ['7', 'ФХЦЧ'], ['8', 'ШЩЬЫ'], ['9', 'ЭЮЯ'], [',', ''], ['0', ''], ['⌫', '']].map(([k, sub]) => (
+            <button key={k} className={k === ',' || k === '⌫' ? 'fn' : ''} onClick={() => press(k)} aria-label={k === '⌫' ? 'Backspace' : k}>
+              {k === '⌫' ? <span style={{ display: 'grid', placeItems: 'center' }}>{Icons.backspace}</span> : <><span className="d">{k}</span>{sub && <span className="s">{sub}</span>}</>}
+            </button>
+          ))}
         </div>
       </div>
-      {open && <TxSheet type={type} amount={amount.replace(',', '.')} accountId={accountId} categoryId={open} onClose={() => { setOpen(null); setAmount(''); }} />}
+      {all && (
+        <Sheet title="Всі статті" onClose={() => setAll(false)}>
+          <FolderManager type={type} />
+          <div className="m-cats">
+            {categories.filter((c) => c.type === type).map((c) => (
+              <button key={c.id} className="m-cat" onClick={() => pick(c.id)}><span className="ic">{catIcon(c.name)}</span><span className="lbl">{c.name}</span></button>
+            ))}
+          </div>
+        </Sheet>
+      )}
+      {open && <TxSheet type={type} amount={amount.replace(',', '.')} accountId={accountId} categoryId={open} onClose={() => { setOpen(null); setExpr(''); setFolder(null); }} />}
       {voice && <TVoice defaultType={type} onClose={() => setVoice(false)} />}
-    </>
+    </div>
   );
 }
 
-function TxList({ items }: { items: TTx[] }) {
+/** Group categories into folders: create a folder, move a category into it (TALKO asks to confirm). */
+function FolderManager({ type }: { type: 'income' | 'expense' }) {
+  const { categories, changed, toast } = useTalko();
+  const [openMgr, setOpenMgr] = useState(false);
+  const [name, setName] = useState('');
+  const [pending, setPending] = useState<{ catId: string; parentId: string | null; token: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const root = personalRoot(categories, type);
+  const own = categories.filter((c) => c.type === type);
+  const folders = folderIds(categories);
+  const folderList = own.filter((c) => folders.has(c.id) && c.id !== root?.id);
+  const movable = own.filter((c) => !folders.has(c.id) && c.id !== root?.id && (c.parentId === root?.id || folders.has(c.parentId ?? '') || /пв-?\s*\d/i.test(c.name)));
+  const nameOf = (id: string | null) => (id ? own.find((c) => c.id === id)?.name : null) ?? 'Без папки';
+  async function create() {
+    if (!name.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      const r = await post('/talko/categories', { name: name.trim(), type, parentId: root?.id ?? null });
+      if (r.id) rememberFolder(r.id);
+      setName(''); await changed(); toast('Папку створено в TALKO');
+    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  }
+  async function move(catId: string, parentId: string | null, token?: string) {
+    setBusy(true); setError(null);
+    try {
+      const r = await api('PATCH', '/talko/categories/' + encodeURIComponent(catId), { parentId, confirmationToken: token });
+      if (r.status === 'needs_confirmation') { setPending({ catId, parentId, token: r.confirmationToken }); return; }
+      setPending(null); await changed(); toast('Перенесено в TALKO');
+    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  }
+  if (!openMgr) return <button className="btn small" style={{ marginBottom: 10 }} onClick={() => setOpenMgr(true)}>📁 Папки статей</button>;
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <input className="input grow" placeholder="Назва нової папки, напр. Дом" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
+        <button className="btn small primary" disabled={busy || !name.trim()} onClick={create}>Створити</button>
+      </div>
+      {pending && (
+        <div className="warn" style={{ marginBottom: 8 }}>
+          Перенести «{nameOf(pending.catId)}» у «{pending.parentId === root?.id ? 'Без папки' : nameOf(pending.parentId)}»? Зміниться і в TALKO.
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="btn small" onClick={() => setPending(null)}>Скасувати</button>
+            <button className="btn small primary" disabled={busy} onClick={() => move(pending.catId, pending.parentId, pending.token)}>Підтвердити</button>
+          </div>
+        </div>
+      )}
+      {error && <div className="error" style={{ marginBottom: 8 }}>{error}</div>}
+      <div className="list">
+        {movable.map((c) => (
+          <div key={c.id} className="item">
+            <span className="ic">{catIcon(c.name)}</span>
+            <div className="main"><div className="t1">{c.name}</div></div>
+            <select className="input" style={{ width: 150, minHeight: 36, padding: '6px 8px' }} value={c.parentId && folders.has(c.parentId) && c.parentId !== root?.id ? c.parentId : ''} disabled={busy}
+              onChange={(e) => move(c.id, e.target.value || root?.id || null)}>
+              <option value="">Без папки</option>
+              {folderList.map((f) => <option key={f.id} value={f.id}>📁 {f.name}</option>)}
+            </select>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TxList({ items, compact }: { items: TTx[]; compact?: boolean }) {
   const { t, lang } = useT();
   const { accounts } = useTalko();
   if (!items.length) return <div className="empty">{t.nothing}</div>;
@@ -217,13 +379,13 @@ function TxList({ items }: { items: TTx[] }) {
     <>
       {days.map(([d, list]) => (
         <div key={d}>
-          <div className="day-head"><span>{fmtDay(d, lang, t)}</span></div>
+          {!compact && <div className="day-head"><span>{fmtDay(d, lang, t)}</span></div>}
           <div className="list">
             {list.map((i) => (
               <div key={i.id} className="item">
-                <span className="ic">{i.type === 'expense' ? '−' : '+'}</span>
-                <div className="main"><div className="t1">{i.comment || i.categoryName}</div><div className="t2">{[i.categoryName, accounts.find((a) => a.id === i.accountId)?.name, i.counterparty].filter(Boolean).join(' · ')}</div></div>
-                <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{i.type === 'expense' ? '−' : '+'}{money(i.amount, i.currency)}</div>
+                <span className="ic">{catIcon(i.categoryName ?? '')}</span>
+                <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{i.comment && i.categoryName && <div className="t3">{i.comment}</div>}</div>
+                <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{i.occurredAt ? new Date(i.occurredAt).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' }) : ''}</small></div>
               </div>
             ))}
           </div>
@@ -248,7 +410,7 @@ function TAccounts() {
         {Object.entries(totals).map(([c, v]) => <div key={c} className="faint num">{money(v, c)}</div>)}
       </div>
       <div className="section-title">{t.accounts}</div>
-      <div className="list">
+      <div className="list acc-list">
         {accounts.map((a) => (
           <div key={a.id} className="item">
             <span className="ic">{a.type === 'cash' ? '💵' : a.type === 'card' ? '💳' : a.type === 'savings' ? '🐷' : '🏦'}</span>

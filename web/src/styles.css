@@ -178,3 +178,55 @@ table.tbl td.r, table.tbl th.r { text-align: right; }
 .src-tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); }
 .answer { font-size: 18px; line-height: 1.4; padding: 12px 14px; background: var(--surface-2); border-radius: 12px; }
 code.url { display: block; word-break: break-all; background: var(--surface-2); padding: 10px; border-radius: 8px; font-size: 13px; }
+
+/* ---------- mobile entry in the «Деньги ОК» style ---------- */
+.app:has(.m-entry) { padding-bottom: 0; max-width: 560px; }
+.m-entry { --tone: var(--expense); --tone-soft: var(--expense-soft); --tone-ink: #1b1100;
+  display: flex; flex-direction: column; height: calc(100dvh - var(--nav-h) - env(safe-area-inset-bottom) - env(safe-area-inset-top)); }
+.m-entry.inc { --tone: var(--income); --tone-soft: var(--income-soft); --tone-ink: #002a0c; }
+.m-head { display: flex; align-items: center; padding: 8px 0 6px; }
+.m-title { flex: 1; text-align: center; font-weight: 700; font-size: 17px; }
+.m-hbtn { width: 36px; height: 36px; border: 0; background: none; color: var(--text-2); display: grid; place-items: center; }
+.m-hbtn svg { width: 22px; height: 22px; }
+.m-amount { position: relative; display: flex; align-items: center; justify-content: center; gap: 8px; border: 2px solid var(--tone); border-radius: 10px;
+  min-height: 46px; padding: 4px 40px; background: var(--surface); }
+.m-amount-txt { font-size: 26px; font-weight: 700; color: var(--tone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-amount.ph .m-amount-txt { font-size: 20px; font-weight: 600; }
+.m-amount-res { color: var(--text-2); font-size: 15px; white-space: nowrap; }
+.m-clear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; background: none; color: var(--text-3); font-size: 18px; width: 32px; height: 32px; }
+.m-accs { position: relative; margin-top: 8px; padding-right: 22px; }
+.m-acc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.m-acc { border: 0; border-radius: 8px; background: var(--surface-3); padding: 5px 6px; display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.m-acc .n { font-size: 13px; color: var(--text-2); max-width: 100%; }
+.m-acc .b { font-size: 14px; font-weight: 600; }
+.m-acc.on { background: var(--tone); }
+.m-acc.on .n, .m-acc.on .b { color: var(--tone-ink); }
+.m-acc-next { position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 20px; height: 40px; border: 0; border-radius: 6px; background: var(--surface-3); color: var(--text); font-size: 20px; padding: 0; }
+.m-strip { text-align: center; font-size: 12px; color: var(--text-3); background: var(--surface); border-radius: 6px; padding: 3px 6px; margin: 8px 0 4px; }
+.m-strip b { color: var(--text-2); font-weight: 600; }
+.m-mid { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 6px; }
+.m-mid .list { background: none; }
+.m-mid .item { padding: 8px 2px; }
+.item .t3 { font-size: 12px; color: var(--balance); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.m-cats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 4px; padding-top: 4px; }
+.m-cat { border: 0; background: none; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 2px; min-width: 0; }
+.m-cat .ic { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; font-size: 26px; background: var(--surface); }
+.m-cat .ic.all { color: var(--accent); font-size: 22px; }
+.m-cat .lbl { font-size: 11px; color: var(--text-2); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-cat:active .ic { background: var(--tone-soft); }
+.m-pad { flex: none; padding-bottom: 6px; }
+.m-ops { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-bottom: 6px; }
+.m-ops button { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; height: 30px; color: var(--accent); font-size: 18px; padding: 0; }
+.m-keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.m-keys button { border: 0; background: #3a3a3c; border-radius: 8px; height: 46px; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; padding: 0; color: #fff; }
+.m-keys button.fn { background: none; }
+.m-keys button:active { background: #5a5a5e; }
+.m-keys .d { font-size: 24px; }
+.m-keys .s { font-size: 9px; letter-spacing: 2px; color: #b4b4af; margin-top: 2px; }
+@media (max-height: 700px) { .m-keys button { height: 40px; } .m-ops button { height: 26px; } }
+
+/* accounts list like «Деньги ОК» */
+.acc-list .item .amt { color: var(--balance); font-weight: 600; }
+.acc-list .item .ic { display: none; }
+.m-cat .ic.folder { background: rgba(255, 214, 10, .12); }
+.m-cat .sub { font-size: 10px; color: var(--text-3); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

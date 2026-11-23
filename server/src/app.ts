@@ -306,6 +306,14 @@ export function createApp() {
   api.delete('/talko', h(async (req, res) => { await TK.disconnectTalko(uid(req)); res.json({ ok: true }); }));
   api.get('/talko/accounts', h(async (req, res) => res.json(await TK.accounts(uid(req)))));
   api.get('/talko/categories', h(async (req, res) => res.json(await TK.categories(uid(req)))));
+  api.post('/talko/categories', h(async (req, res) => {
+    const b = z.object({ name: text(100).min(1), type: z.enum(['income', 'expense']), parentId: text(200).nullable().optional() }).parse(req.body);
+    res.json(await TK.createCategory(uid(req), b));
+  }));
+  api.patch('/talko/categories/:id', h(async (req, res) => {
+    const b = z.object({ parentId: text(200).nullable().optional(), name: text(100).optional(), confirmationToken: text(500).optional() }).parse(req.body);
+    res.json(await TK.updateCategory(uid(req), String(req.params.id), b, b.confirmationToken));
+  }));
   api.get('/talko/projects', h(async (req, res) => res.json(await TK.projects(uid(req)).catch(() => []))));
   api.get('/talko/transactions', h(async (req, res) => {
     const q = z.object({ from: isoDate.optional(), to: isoDate.optional(), type: z.enum(['income', 'expense']).optional(), accountId: text(200).optional(),

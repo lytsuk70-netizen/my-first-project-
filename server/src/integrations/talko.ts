@@ -184,6 +184,24 @@ export async function categories(userId: string) {
   return (r.categories ?? []).map((c: Json) => ({ id: c.id, name: c.name, type: c.type, parentId: c.parentId || null }));
 }
 
+/** New category or folder (a folder is just a category that other categories point to). */
+export async function createCategory(userId: string, input: { name: string; type: 'income' | 'expense'; parentId?: string | null }) {
+  const r = await talko(userId, 'talko_create_category', { name: input.name, type: input.type, parentId: input.parentId ?? null });
+  return { id: r.id ?? r.categoryId ?? r.category?.id ?? null, result: r };
+}
+
+/** Move a category into a folder (parentId) and/or rename it: dry run first, then the confirmed write. */
+export async function updateCategory(userId: string, id: string, input: { parentId?: string | null; name?: string }, confirmationToken?: string) {
+  const base: Json = { categoryId: id, ...(input.parentId !== undefined ? { parentId: input.parentId } : {}), ...(input.name ? { name: input.name } : {}) };
+  if (!confirmationToken) {
+    const preview = await talko(userId, 'talko_update_category', { ...base, dryRun: true });
+    return { status: 'needs_confirmation' as const, confirmationToken: confirmationOf(preview) ?? 'dry-run-ok', preview };
+  }
+  const r = await talko(userId, 'talko_update_category', confirmationToken === 'dry-run-ok'
+    ? base : { ...base, confirmationToken, confirmationReason: 'Підтверджено в застосунку «Гроші ОК»' });
+  return { status: 'saved' as const, result: r };
+}
+
 export async function projects(userId: string) {
   const r = await talko(userId, 'talko_list_projects', { mode: 'registry', rawList: true, status: 'active', limit: 200 });
   return (r.projects ?? r.items ?? []).map((p: Json) => ({ id: p.id, name: p.name ?? p.title }));
