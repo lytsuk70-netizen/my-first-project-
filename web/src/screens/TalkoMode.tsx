@@ -229,12 +229,12 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   const pages = Math.max(1, Math.ceil(accounts.length / PAGE));
   const shown = accounts.slice(page * PAGE, page * PAGE + PAGE);
   const folders = folderIds(categories);
-  const cats = folder ? categories.filter((c) => c.parentId === folder) : mainCategories(categories, type).filter((c) => !c.parentId || !folders.has(c.parentId) || !mainCategories(categories, type).some((m) => m.id === c.parentId));
+  const cats = folder ? [...categories.filter((c) => c.id === folder), ...categories.filter((c) => c.parentId === folder)] : mainCategories(categories, type).filter((c) => !c.parentId || !folders.has(c.parentId) || !mainCategories(categories, type).some((m) => m.id === c.parentId));
   const folderName = folder ? categories.find((c) => c.id === folder)?.name : null;
   const todayTotal = (today.data?.items ?? []).reduce((s: Record<string, number>, x: TTx) => ({ ...s, [x.currency]: Math.round(((s[x.currency] ?? 0) + Number(x.amount)) * 100) / 100 }), {});
   const totalTxt = Object.entries(todayTotal).map(([c, v]) => money((v as number).toFixed(2), c)).join(' + ') || money('0', 'UAH');
   const pick = (id: string) => {
-    if (folders.has(id) && categories.some((c) => c.parentId === id)) { setAll(false); setFolder(id); return; }
+    if (id !== folder && folders.has(id) && categories.some((c) => c.parentId === id)) { setAll(false); setFolder(id); return; }
     if (!hasAmount) return; setAll(false); setOpen(id);
   };
   return (
@@ -268,9 +268,9 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
               : <button className="m-cat" onClick={() => setAll(true)}><span className="ic all">☰</span><span className="lbl">Всі статті</span></button>}
             {cats.map((c) => (
               <button key={c.id} className="m-cat" onClick={() => pick(c.id)}>
-                <span className={'ic' + (folders.has(c.id) ? ' folder' : '')}>{folders.has(c.id) ? '📁' : catIcon(c.name)}</span>
+                <span className={'ic' + (folders.has(c.id) && c.id !== folder ? ' folder' : '')}>{folders.has(c.id) && c.id !== folder ? '📁' : catIcon(c.name)}</span>
                 <span className="lbl">{c.name.replace(/^Витрати\s+/i, '')}</span>
-                {folderName && <span className="sub">{folderName}</span>}
+                {folderName && <span className="sub">{c.id === folder ? 'уся папка' : folderName}</span>}
               </button>
             ))}
           </div>
