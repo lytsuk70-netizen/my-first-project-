@@ -526,9 +526,16 @@ function FolderManager({ type }: { type: 'income' | 'expense' }) {
   );
 }
 
-/** Comment without the time marker «(12:11)» — the time is shown on the right. */
-function cleanComment(c: string | null | undefined) {
-  const x = String(c ?? '').replace(/\s*\((?:[01]?\d|2[0-3]):[0-5]\d\)/g, '').replace(/\s+(?:[01]?\d|2[0-3]):[0-5]\d$/, '').trim();
+const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Comment without what the row already shows: the category, the account and the time. */
+function cleanComment(c: string | null | undefined, cat?: string | null, acc?: string | null) {
+  let x = String(c ?? '');
+  x = x.replace(/(^|[\s(,])([01]?\d|2[0-3]):[0-5]\d(?![\d:])/g, '$1');
+  x = x.replace(/\s*у\s*«?Деньги ОК»?/gi, '');
+  if (acc) x = x.replace(new RegExp('(^|[\\s(,—-])' + esc(acc) + '(?=$|[\\s),—-])', 'giu'), '$1');
+  if (cat) x = x.replace(new RegExp('^\\s*' + esc(cat) + '(?=$|[\\s(,—:-])', 'iu'), '');
+  x = x.replace(/\(\s*[,;:—-]*\s*\)/g, '').replace(/\(\s*[,;]\s*/g, '(').replace(/\s*[,;]\s*\)/g, ')');
+  x = x.replace(/\s{2,}/g, ' ').replace(/^[\s—:,;-]+|[\s—:,;-]+$/g, '').trim();
   return x === '—' ? '' : x;
 }
 
@@ -571,7 +578,7 @@ function TxList({ items, compact, selected, onSelect, actions, onDelete, onYeste
                   </div>
                 )}
                 <span className="ic">{catIcon(i.categoryName ?? '')}</span>
-                <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{(() => { const c = cleanComment(i.comment); return c && i.categoryName ? <div className="t3">{c}</div> : null; })()}</div>
+                <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{(() => { const c = cleanComment(i.comment, i.categoryName, accounts.find((a) => a.id === i.accountId)?.name); return c && i.categoryName ? <div className="t3">{c}</div> : null; })()}</div>
                 <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{pending?.has(i.id) && <span className="m-pend" title="Ще не в TALKO">⟳ </span>}{i.time ?? ''}</small></div>
                 {selected === i.id && actions && <div className="m-actions" onClick={(e) => e.stopPropagation()}>{actions(i)}</div>}
                 {swiped === i.id && onDelete && (
