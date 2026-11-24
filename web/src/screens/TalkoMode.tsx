@@ -29,7 +29,7 @@ const PALETTE = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#0ca30c
 export function TalkoShell() {
   const { t } = useT();
   const [tab, setTab] = useState<Tab>('expense');
-  const [data, setData] = useState<Omit<Ctx, 'version' | 'changed' | 'toast' | 'error'>>({ accounts: [], totals: {}, totalBase: null, baseCurrency: 'UAH', categories: [], projects: [] });
+  const [data, setData] = useState<Omit<Ctx, 'version' | 'changed' | 'changedAll' | 'adjust' | 'toast' | 'error'>>({ accounts: [], totals: {}, totalBase: null, baseCurrency: 'UAH', categories: [], projects: [] });
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<{ m: string; err?: boolean } | null>(null);
