@@ -538,6 +538,8 @@ const TIME_RE = '(?:[01]?\\d|2[0-3]):[0-5]\\d';
 function cleanComment(c: string | null | undefined, cat?: string | null, acc?: string | null) {
   let x = String(c ?? '').trim();
   const lc = (v: unknown) => String(v ?? '').toLowerCase().trim();
+  // «готівка» is already said by the cash account (Мої гроші, Дом)
+  x = x.replace(/\s*[—–-]?\s*(?<!\p{L})готівк(?:а|ою|ова)(?!\p{L})/giu, '');
   const isNoise = (p: string) => { const q = lc(p).replace(/у\s*«?деньги ок»?/g, '').replace(new RegExp(TIME_RE, 'g'), '').trim(); return !q || q === lc(acc) || q === lc(cat); };
   x = x.replace(/\s*\(([^()]*)\)/g, (_m, inner: string) => { const keep = inner.split(',').filter((p) => !isNoise(p)); return keep.length ? ` (${keep.map((p) => p.trim()).join(', ')})` : ''; });
   x = x.replace(new RegExp(`\\s+${TIME_RE}$`), '').trim();
