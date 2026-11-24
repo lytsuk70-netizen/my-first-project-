@@ -354,7 +354,11 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
     const e0 = edit;
     setEdit(null);
     if (e0.kind === 'date') { const it = items.find((x) => x.id === e0.id); if (it && e0.value !== todayISO()) { moveDate(it, e0.value); return; } }
-    enqueue({ id: SY.uid(), kind: 'edit', txId: e0.id, at: new Date().toISOString(), tries: 0, body: e0.kind === 'comment' ? { description: e0.value } : { date: e0.value } });
+    // the bank time lives in the comment (TALKO keeps only the day): keep it when the comment is rewritten
+    const it = items.find((x) => x.id === e0.id);
+    const keepTime = e0.kind === 'comment' && !!it?.time && new RegExp(TIME_RE).test(it?.comment ?? '') && !new RegExp(TIME_RE).test(e0.value);
+    const description = keepTime ? `${e0.value.trim()} (${it!.time})`.trim() : e0.value;
+    enqueue({ id: SY.uid(), kind: 'edit', txId: e0.id, at: new Date().toISOString(), tries: 0, body: e0.kind === 'comment' ? { description } : { date: e0.value } });
   }
   // long press on a category opens the full form (comment, date, project)
   const longPressed = useRef(false);
@@ -413,7 +417,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
               enqueue({ id: SY.uid(), kind: 'delete', txId: i.id, at: new Date().toISOString(), tries: 0, item: i });
             }}
             actions={(i) => (<>
-              <button onClick={() => setEdit({ id: i.id, kind: 'comment', value: i.comment === '—' ? '' : (i.comment ?? '') })} aria-label="Коментар">✎<span>Коментар</span></button>
+              <button onClick={() => setEdit({ id: i.id, kind: 'comment', value: cleanComment(i.comment, i.categoryName, accounts.find((a) => a.id === i.accountId)?.name) })} aria-label="Коментар">✎<span>Коментар</span></button>
               <button onClick={() => setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() })} aria-label="Дата">📅<span>Дата</span></button>
             </>)} />
         )}
@@ -526,17 +530,21 @@ function FolderManager({ type }: { type: 'income' | 'expense' }) {
   );
 }
 
-const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-/** Comment without what the row already shows: the category, the account and the time. */
+const TIME_RE = '(?:[01]?\\d|2[0-3]):[0-5]\\d';
+/**
+ * Comment as shown under an entry: without what the row already shows — the category, the account
+ * and the time (e.g. «Продукти (Дом, 13:34)» → nothing, «Кафе — Кондитерська» → «Кондитерська»).
+ */
 function cleanComment(c: string | null | undefined, cat?: string | null, acc?: string | null) {
-  let x = String(c ?? '');
-  x = x.replace(/(^|[\s(,])([01]?\d|2[0-3]):[0-5]\d(?![\d:])/g, '$1');
-  x = x.replace(/\s*у\s*«?Деньги ОК»?/gi, '');
-  if (acc) x = x.replace(new RegExp('(^|[\\s(,—-])' + esc(acc) + '(?=$|[\\s),—-])', 'giu'), '$1');
-  if (cat) x = x.replace(new RegExp('^\\s*' + esc(cat) + '(?=$|[\\s(,—:-])', 'iu'), '');
-  x = x.replace(/\(\s*[,;:—-]*\s*\)/g, '').replace(/\(\s*[,;]\s*/g, '(').replace(/\s*[,;]\s*\)/g, ')');
-  x = x.replace(/\s{2,}/g, ' ').replace(/^[\s—:,;-]+|[\s—:,;-]+$/g, '').trim();
-  return x === '—' ? '' : x;
+  let x = String(c ?? '').trim();
+  const lc = (v: unknown) => String(v ?? '').toLowerCase().trim();
+  const isNoise = (p: string) => { const q = lc(p).replace(/у\s*«?деньги ок»?/g, '').replace(new RegExp(TIME_RE, 'g'), '').trim(); return !q || q === lc(acc) || q === lc(cat); };
+  x = x.replace(/\s*\(([^()]*)\)/g, (_m, inner: string) => { const keep = inner.split(',').filter((p) => !isNoise(p)); return keep.length ? ` (${keep.map((p) => p.trim()).join(', ')})` : ''; });
+  x = x.replace(new RegExp(`\\s+${TIME_RE}$`), '').trim();
+  const m = x.match(/^([^—–:,-]+?)\s*[—–:-]\s+(.+)$/);
+  if (m && cat && (lc(m[1]) === lc(cat) || (lc(m[1]).length >= 4 && lc(cat).startsWith(lc(m[1]))))) x = m[2].trim();
+  if ([lc(cat), lc(acc), '—'].includes(lc(x))) return '';
+  return x;
 }
 
 function TxList({ items, compact, selected, onSelect, actions, onDelete, onYesterday, onDate, pending }: { items: TTx[]; compact?: boolean; pending?: Set<string>; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode; onDelete?: (i: TTx) => Promise<void>; onYesterday?: (i: TTx) => void; onDate?: (i: TTx) => void }) {
