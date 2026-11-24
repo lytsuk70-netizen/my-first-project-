@@ -278,7 +278,12 @@ export async function report(userId: string, from: string, to: string) {
 export interface TalkoTxInput { type: 'income' | 'expense'; amount: string; accountId: string; categoryId: string; projectId?: string | null; date?: string; description: string; counterparty?: string }
 
 function confirmationOf(r: Json) {
-  return r.confirmationToken ?? r.previewToken ?? r.confirmation?.token ?? null;
+  // TALKO sometimes answers in plain text: "Потрібне явне підтвердження… confirmationToken: mcpc_… (діє …)"
+  const fromText = typeof r.message === 'string' ? r.message.match(/confirmationToken:\s*([A-Za-z0-9_\-]+)/)?.[1] : undefined;
+  return r.confirmationToken ?? r.previewToken ?? r.confirmation?.token ?? fromText ?? null;
+}
+function stillNeedsConfirmation(r: Json) {
+  return typeof r.message === 'string' && /підтвердження|confirmationToken/i.test(r.message) && !r.ok && !r.id;
 }
 
 export async function addTransaction(userId: string, input: TalkoTxInput, confirmationToken?: string) {
@@ -300,6 +305,7 @@ export async function editTransaction(userId: string, id: string, input: { descr
   let r = await talko(userId, 'talko_edit_transaction', base);
   const token = confirmationOf(r);
   if (token) r = await talko(userId, 'talko_edit_transaction', { ...base, confirmationToken: token, confirmationReason: 'Підтверджено в застосунку «Гроші ОК»' });
+  if (stillNeedsConfirmation(r)) throw new IntegrationError('TALKO не підтвердив зміну');
   return { status: 'saved' as const, result: r };
 }
 
@@ -309,6 +315,7 @@ export async function deleteTransaction(userId: string, id: string) {
   let r = await talko(userId, 'talko_delete_transaction', { transactionId: id });
   const token = confirmationOf(r);
   if (token) r = await talko(userId, 'talko_delete_transaction', { transactionId: id, confirmationToken: token, confirmationReason: reason });
+  if (stillNeedsConfirmation(r)) throw new IntegrationError('TALKO не підтвердив видалення');
   return { status: 'deleted' as const, result: r };
 }
 
