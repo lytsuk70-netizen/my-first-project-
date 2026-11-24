@@ -2,6 +2,7 @@
  * TALKO mode: the phone app is a front end for TALKO CRM finance. Every number is read from
  * TALKO and every new operation is written to TALKO (with TALKO's own confirmation step).
  */
+import type React from 'react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { api, del, get, post, qs } from '../api';
 import { Bars, Donut } from '../components/Charts';
@@ -212,6 +213,8 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   const [folder, setFolder] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [voice, setVoice] = useState(false);
+  const [sel, setSel] = useState<string | null>(null);
+  const [edit, setEdit] = useState<{ id: string; kind: 'comment' | 'date'; value: string } | null>(null);
   useEffect(() => { if (accounts.length && !accounts.some((a) => a.id === accountId)) setAccountId(accounts[0].id); }, [accounts, accountId]);
   const today = useAsyncT(() => get('/talko/transactions' + qs({ from: todayISO(), to: todayISO(), type })), [version, type]);
   const exp = type === 'expense';
@@ -249,6 +252,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
       const body = { type, amount: amount.replace(',', '.'), accountId, categoryId, projectId: null, description: '', date: todayISO() };
       let r = await post('/talko/transactions', body);
       if (r.status === 'needs_confirmation') r = await post('/talko/transactions', { ...body, confirmationToken: r.confirmationToken });
+      newId.current = r.id ?? 'latest';
       const cat = categories.find((c) => c.id === categoryId)?.name ?? '';
       setExpr(''); setFolder(null);
       await changed();
@@ -256,6 +260,23 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
     } catch (e: any) {
       toast('Не записано: ' + (e?.message ?? 'помилка'));
     } finally { setBusy(false); }
+  }
+  // after a quick save the new entry is highlighted with ✎ / 📅 actions, like «Деньги ОК»
+  const newId = useRef<string | null>(null);
+  useEffect(() => {
+    const items: TTx[] = today.data?.items ?? [];
+    if (!newId.current || !items.length) return;
+    const found = newId.current !== 'latest' ? items.find((x) => x.id === newId.current) : null;
+    setSel((found ?? [...items].sort((a, b) => String(b.occurredAt ?? '').localeCompare(String(a.occurredAt ?? '')))[0]).id);
+    newId.current = null;
+  }, [today.data]);
+  async function saveEdit() {
+    if (!edit) return;
+    setBusy(true);
+    try {
+      await api('PATCH', '/talko/transactions/' + encodeURIComponent(edit.id), edit.kind === 'comment' ? { description: edit.value } : { date: edit.value });
+      setEdit(null); await changed(); toast(edit.kind === 'comment' ? 'Коментар збережено' : 'Дату змінено');
+    } catch (e: any) { toast('Не збережено: ' + (e?.message ?? 'помилка')); } finally { setBusy(false); }
   }
   // long press on a category opens the full form (comment, date, project)
   const longPressed = useRef(false);
@@ -301,7 +322,11 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
             <div className="m-hint">{busy ? 'Записую в TALKO…' : 'Натисніть статтю — витрата запишеться. Утримайте — додати коментар чи дату.'}</div>
           </div>
         ) : (
-          <TxList items={today.data?.items ?? []} compact />
+          <TxList items={today.data?.items ?? []} compact selected={sel} onSelect={(id) => setSel(sel === id ? null : id)}
+            actions={(i) => (<>
+              <button onClick={() => setEdit({ id: i.id, kind: 'comment', value: i.comment === '—' ? '' : (i.comment ?? '') })} aria-label="Коментар">✎<span>Коментар</span></button>
+              <button onClick={() => setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() })} aria-label="Дата">📅<span>Дата</span></button>
+            </>)} />
         )}
       </div>
       <div className="m-pad">
@@ -326,6 +351,20 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
       )}
       {open && <TxSheet type={type} amount={amount.replace(',', '.')} accountId={accountId} categoryId={open} onClose={() => { setOpen(null); setExpr(''); setFolder(null); }} />}
       {voice && <TVoice defaultType={type} onClose={() => setVoice(false)} />}
+      {edit && (
+        <div className="m-modal" onClick={() => setEdit(null)}>
+          <div className="m-modal-box" onClick={(e) => e.stopPropagation()}>
+            {edit.kind === 'comment'
+              ? <textarea autoFocus className="input" rows={4} placeholder="Коментар" value={edit.value} maxLength={500} onChange={(e) => setEdit({ ...edit, value: e.target.value })} />
+              : <input autoFocus type="date" className="input" value={edit.value} max={todayISO()} onChange={(e) => setEdit({ ...edit, value: e.target.value })} />}
+            <div className="m-modal-btns">
+              {edit.kind === 'comment' && <button onClick={() => setEdit({ ...edit, value: '' })}>Очистити</button>}
+              <button onClick={() => setEdit(null)} aria-label="Скасувати">✕</button>
+              <button className="ok" disabled={busy || (edit.kind === 'date' && !edit.value)} onClick={saveEdit} aria-label="Зберегти">✓</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -395,7 +434,7 @@ function FolderManager({ type }: { type: 'income' | 'expense' }) {
   );
 }
 
-function TxList({ items, compact }: { items: TTx[]; compact?: boolean }) {
+function TxList({ items, compact, selected, onSelect, actions }: { items: TTx[]; compact?: boolean; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode }) {
   const { t, lang } = useT();
   const { accounts } = useTalko();
   if (!items.length) return <div className="empty">{t.nothing}</div>;
@@ -408,10 +447,11 @@ function TxList({ items, compact }: { items: TTx[]; compact?: boolean }) {
           {!compact && <div className="day-head"><span>{fmtDay(d, lang, t)}</span></div>}
           <div className="list">
             {list.map((i) => (
-              <div key={i.id} className="item">
+              <div key={i.id} className={'item' + (selected === i.id ? ' sel' : '')} onClick={onSelect ? () => onSelect(i.id) : undefined}>
                 <span className="ic">{catIcon(i.categoryName ?? '')}</span>
-                <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{i.comment && i.categoryName && <div className="t3">{i.comment}</div>}</div>
+                <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{i.comment && i.comment !== '—' && i.categoryName && <div className="t3">{i.comment}</div>}</div>
                 <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{i.occurredAt ? new Date(i.occurredAt).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' }) : ''}</small></div>
+                {selected === i.id && actions && <div className="m-actions" onClick={(e) => e.stopPropagation()}>{actions(i)}</div>}
               </div>
             ))}
           </div>

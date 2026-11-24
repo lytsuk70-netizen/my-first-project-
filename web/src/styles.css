@@ -233,3 +233,13 @@ code.url { display: block; word-break: break-all; background: var(--surface-2); 
 .m-cat { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 .m-cat:disabled { opacity: .5; }
 .m-hint { grid-column: 1 / -1; text-align: center; font-size: 11px; color: var(--text-3); padding: 6px 0 2px; }
+.item.sel { background: var(--surface-2, #1c1c1e); border-radius: 10px; flex-wrap: wrap; }
+.m-actions { flex-basis: 100%; display: flex; justify-content: space-around; padding: 6px 0 2px 40px; }
+.m-actions button { border: 0; background: none; color: var(--accent); font-size: 20px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.m-actions button span { font-size: 10px; color: var(--text-3); }
+.m-modal { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.55); display: flex; align-items: flex-start; justify-content: center; padding: calc(env(safe-area-inset-top) + 70px) 14px 0; }
+.m-modal-box { width: 100%; max-width: 520px; background: #2c2c2e; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.m-modal-box textarea { resize: none; font-size: 17px; }
+.m-modal-btns { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
+.m-modal-btns button { border: 0; border-radius: 10px; height: 42px; background: #3a4a6a; color: #8ab4ff; font-size: 18px; }
+.m-modal-btns button.ok { background: #2f6fe0; color: #fff; }

@@ -294,6 +294,15 @@ export async function addTransaction(userId: string, input: TalkoTxInput, confir
   return { status: 'saved' as const, id: r.id ?? r.transactionId ?? r.transaction?.id ?? null, result: r };
 }
 
+/** Change comment and/or date of a TALKO operation. The user's ✓ in the app is the confirmation. */
+export async function editTransaction(userId: string, id: string, input: { description?: string; date?: string }) {
+  const base: Json = { transactionId: id, ...(input.description !== undefined ? { description: input.description || '—' } : {}), ...(input.date ? { date: input.date.slice(0, 10) } : {}) };
+  let r = await talko(userId, 'talko_edit_transaction', base);
+  const token = confirmationOf(r);
+  if (token) r = await talko(userId, 'talko_edit_transaction', { ...base, confirmationToken: token, confirmationReason: 'Підтверджено в застосунку «Гроші ОК»' });
+  return { status: 'saved' as const, result: r };
+}
+
 export async function transfer(userId: string, input: { fromAccountId: string; toAccountId: string; amount: string; amountTo?: string; description?: string }, confirmationToken?: string) {
   const base: Json = {
     fromAccountId: input.fromAccountId, toAccountId: input.toAccountId, amount: Number(input.amount),
