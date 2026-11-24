@@ -469,8 +469,11 @@ export function createApp() {
   const here = dirname(fileURLToPath(import.meta.url));
   const webDist = [join(here, '..', '..', 'web', 'dist'), join(here, '..', '..', '..', 'web', 'dist')].find((p) => existsSync(p));
   if (webDist) {
-    app.use(express.static(webDist, { index: false, maxAge: '1h' }));
-    app.get('*', (_req, res) => res.sendFile(join(webDist, 'index.html')));
+    // the service worker and the page must always be checked for a new version; hashed /assets are immutable
+    app.get(['/sw.js', '/'], (req, res, next) => { res.setHeader('Cache-Control', 'no-cache'); next(); });
+    app.use('/assets', express.static(join(webDist, 'assets'), { maxAge: '365d', immutable: true }));
+    app.use(express.static(webDist, { index: false, maxAge: '1h', setHeaders: (res, p) => { if (p.endsWith('sw.js') || p.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache'); } }));
+    app.get('*', (_req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.sendFile(join(webDist, 'index.html')); });
   }
 
   // ---------- errors ----------
