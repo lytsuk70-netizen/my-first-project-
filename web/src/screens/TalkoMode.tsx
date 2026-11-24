@@ -291,6 +291,15 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
     setSel((found ?? [...list].sort((a, b) => String(b.occurredAt ?? '').localeCompare(String(a.occurredAt ?? '')))[0]).id);
     newId.current = null;
   }, [today.data]);
+  function moveDate(i: TTx, date: string) {
+    if (sel === i.id) setSel(null);
+    setOverrides((o) => ({ ...o, [i.id]: { localDate: date } }));
+    toast(`Перенесено на ${date.split('-').reverse().slice(0, 2).join('.')}: ${i.categoryName ?? ''} ${money(i.amount, i.currency)}`);
+    void (async () => {
+      try { await api('PATCH', '/talko/transactions/' + encodeURIComponent(i.id), { date }); await changed(); setOverrides((o) => { const n = { ...o }; delete n[i.id]; return n; }); }
+      catch (err: any) { setOverrides((o) => { const n = { ...o }; delete n[i.id]; return n; }); toast('Дату не змінено: ' + (err?.message ?? 'помилка'), true); }
+    })();
+  }
   function saveEdit() {
     if (!edit) return;
     const e0 = edit;
@@ -352,6 +361,13 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
           </div>
         ) : (
           <TxList items={items} compact selected={sel} onSelect={(id) => setSel(sel === id ? null : id)}
+            onYesterday={(i) => {
+              if (i.id.startsWith('tmp-')) { toast('Зачекайте секунду — витрата ще записується'); return; }
+              const d = new Date(); d.setDate(d.getDate() - 1);
+              const y = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+              moveDate(i, y);
+            }}
+            onDate={(i) => { if (i.id.startsWith('tmp-')) { toast('Зачекайте секунду — витрата ще записується'); return; } setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() }); }}
             onDelete={async (i) => {
               if (i.id.startsWith('tmp-')) { toast('Зачекайте секунду — витрата ще записується'); return; }
               const delta = (i.type === 'expense' ? 1 : -1) * Number(i.amount);
@@ -478,21 +494,24 @@ function FolderManager({ type }: { type: 'income' | 'expense' }) {
   );
 }
 
-function TxList({ items, compact, selected, onSelect, actions, onDelete }: { items: TTx[]; compact?: boolean; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode; onDelete?: (i: TTx) => Promise<void> }) {
+function TxList({ items, compact, selected, onSelect, actions, onDelete, onYesterday, onDate }: { items: TTx[]; compact?: boolean; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode; onDelete?: (i: TTx) => Promise<void>; onYesterday?: (i: TTx) => void; onDate?: (i: TTx) => void }) {
   const { t, lang } = useT();
   const { accounts } = useTalko();
   // swipe left on an entry reveals the red trash button, like «Деньги ОК»
   const [swiped, setSwiped] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  // swipe right reveals «Вчора» and «Дата» (like iPhone Reminders)
+  const [swipedR, setSwipedR] = useState<string | null>(null);
   const touch = useRef<{ id: string; x: number; y: number } | null>(null);
-  const sw = onDelete ? (i: TTx) => ({
+  const sw = onDelete || onYesterday || onDate ? (i: TTx) => ({
     onTouchStart: (e: React.TouchEvent) => { touch.current = { id: i.id, x: e.touches[0].clientX, y: e.touches[0].clientY }; },
     onTouchEnd: (e: React.TouchEvent) => {
       const st = touch.current; touch.current = null;
       if (!st || st.id !== i.id) return;
       const dx = e.changedTouches[0].clientX - st.x, dy = e.changedTouches[0].clientY - st.y;
       if (Math.abs(dx) < 40 || Math.abs(dy) > Math.abs(dx)) return;
-      setSwiped(dx < 0 ? i.id : null);
+      if (swiped || swipedR) { setSwiped(null); setSwipedR(null); return; } // any swipe closes an open row
+      if (dx < 0) setSwiped(i.id); else if (onYesterday || onDate) setSwipedR(i.id);
     },
   }) : () => ({});
   if (!items.length) return <div className="empty">{t.nothing}</div>;
@@ -505,8 +524,14 @@ function TxList({ items, compact, selected, onSelect, actions, onDelete }: { ite
           {!compact && <div className="day-head"><span>{fmtDay(d, lang, t)}</span></div>}
           <div className="list">
             {list.map((i) => (
-              <div key={i.id} className={'item' + (selected === i.id ? ' sel' : '') + (swiped === i.id ? ' swiped' : '')} {...sw(i)}
-                onClick={() => { if (swiped) { setSwiped(null); return; } onSelect?.(i.id); }}>
+              <div key={i.id} className={'item' + (selected === i.id ? ' sel' : '') + (swiped === i.id ? ' swiped' : '') + (swipedR === i.id ? ' swiped-r' : '')} {...sw(i)}
+                onClick={() => { if (swiped || swipedR) { setSwiped(null); setSwipedR(null); return; } onSelect?.(i.id); }}>
+                {swipedR === i.id && (
+                  <div className="m-left-acts" onClick={(e) => e.stopPropagation()}>
+                    {onYesterday && <button className="m-yest" onClick={() => { setSwipedR(null); onYesterday(i); }}>Вчора</button>}
+                    {onDate && <button className="m-dt" onClick={() => { setSwipedR(null); onDate(i); }}>Дата</button>}
+                  </div>
+                )}
                 <span className="ic">{catIcon(i.categoryName ?? '')}</span>
                 <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{i.comment && i.comment !== '—' && i.categoryName && <div className="t3">{i.comment}</div>}</div>
                 <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{i.occurredAt ? new Date(i.occurredAt).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' }) : ''}</small></div>

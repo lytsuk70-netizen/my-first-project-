@@ -271,3 +271,8 @@ label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width:
 .m-mic { flex: none; width: 44px; min-height: 40px; border: 0; border-radius: 10px; background: #3a4a6a; color: #8ab4ff; display: grid; place-items: center; }
 .m-mic.on { background: #ff3b30; color: #fff; animation: micpulse 1s infinite; }
 @keyframes micpulse { 50% { opacity: .6; } }
+.item.swiped-r { transform: translateX(170px); position: relative; overflow: visible; }
+.m-left-acts { position: absolute; left: -166px; top: 50%; transform: translateY(-50%); display: flex; gap: 6px; }
+.m-left-acts button { width: 78px; height: 52px; border: 0; border-radius: 14px; color: #fff; font-size: 15px; line-height: 1.1; }
+.m-yest { background: #5b8def; }
+.m-dt { background: #5a5a5e; }
