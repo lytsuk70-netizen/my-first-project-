@@ -323,10 +323,13 @@ export function createApp() {
   api.get('/talko/report', h(async (req, res) => { const q = z.object({ from: isoDate, to: isoDate }).parse(req.query); res.json(await TK.report(uid(req), q.from, q.to)); }));
   api.post('/talko/transactions', h(async (req, res) => {
     const b = z.object({ type: z.enum(['income', 'expense']), amount: amount, accountId: text(200).min(1), categoryId: text(200).min(1), projectId: text(200).nullable().optional(),
-      date: text(40).optional(), description: text(500).default(''), counterparty: text(200).optional(), confirmationToken: text(500).optional() }).parse(req.body);
+      date: text(40).optional(), description: text(500).default(''), counterparty: text(200).optional(), confirmationToken: text(500).optional(), autoConfirm: z.boolean().optional() }).parse(req.body);
     const n = b.amount.replace(/\s/g, '').replace(',', '.');
     if (!/^\d+(\.\d{1,2})?$/.test(n) || Number(n) <= 0) return res.status(400).json({ error: 'invalid', message: 'Невірна сума' });
-    res.json(await TK.addTransaction(uid(req), { ...b, amount: n }, b.confirmationToken));
+    let r: any = await TK.addTransaction(uid(req), { ...b, amount: n }, b.confirmationToken);
+    // one-tap entry: the tap is the confirmation, so confirm on the server in the same request (one round trip from the phone)
+    if (b.autoConfirm && r.status === 'needs_confirmation') r = await TK.addTransaction(uid(req), { ...b, amount: n }, r.confirmationToken);
+    res.json(r);
   }));
   // Voice in TALKO mode: the same interpreter, matched against TALKO's accounts and categories.
   api.patch('/talko/transactions/:id', h(async (req, res) => {
@@ -356,9 +359,11 @@ export function createApp() {
     res.json({ command: cmd, answer });
   }));
   api.post('/talko/transfers', h(async (req, res) => {
-    const b = z.object({ fromAccountId: text(200).min(1), toAccountId: text(200).min(1), amount, amountTo: amount.optional(), description: text(500).optional(), date: isoDate.optional(), confirmationToken: text(500).optional() }).parse(req.body);
+    const b = z.object({ fromAccountId: text(200).min(1), toAccountId: text(200).min(1), amount, amountTo: amount.optional(), description: text(500).optional(), date: isoDate.optional(), confirmationToken: text(500).optional(), autoConfirm: z.boolean().optional() }).parse(req.body);
     if (b.fromAccountId === b.toAccountId) return res.status(400).json({ error: 'invalid', message: 'Рахунки мають відрізнятися' });
-    const r = await TK.transfer(uid(req), b, b.confirmationToken);
+    let r: any = await TK.transfer(uid(req), b, b.confirmationToken);
+    // the ✓ on the transfers screen is the confirmation: finish the preview → confirm steps here, in one request
+    for (let i = 0; i < 2 && b.autoConfirm && r.status === 'needs_confirmation'; i++) r = await TK.transfer(uid(req), b, r.confirmationToken);
     if (r.status === 'saved') {
       const x: any = r.result ?? {};
       await pool.query(

@@ -139,18 +139,24 @@ function entityFilter(): Set<string> | null {
   return ids.length ? new Set(ids) : null;
 }
 
+const visCache = new Map<string, { at: number; ids: Set<string> }>();
 async function rawAccounts(userId: string) {
   const r = await talko(userId, 'talko_list_finance_accounts', { activeOnly: true });
   const only = entityFilter();
   const list: Json[] = (r.accounts ?? []).filter((a: Json) => !only || only.has(String(a.entityId ?? a.legalEntityId ?? '')));
+  if (only) visCache.set(userId, { at: Date.now(), ids: new Set(list.map((a) => String(a.id))) });
   return { r, list, filtered: !!only };
 }
 
 /** Account ids visible in the app (null = no filter). */
 export async function visibleAccountIds(userId: string): Promise<Set<string> | null> {
   if (!entityFilter()) return null;
+  const c = visCache.get(userId);
+  if (c && Date.now() - c.at < 10 * 60_000) return c.ids; // the set of accounts rarely changes; balances are not cached
   const { list } = await rawAccounts(userId);
-  return new Set(list.map((a) => String(a.id)));
+  const ids = new Set(list.map((a) => String(a.id)));
+  visCache.set(userId, { at: Date.now(), ids });
+  return ids;
 }
 
 export async function accounts(userId: string) {

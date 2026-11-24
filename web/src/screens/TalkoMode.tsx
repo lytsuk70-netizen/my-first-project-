@@ -18,7 +18,7 @@ type Tab = 'expense' | 'income' | 'accounts' | 'feed' | 'menu';
 interface Ctx {
   accounts: TAccount[]; totals: Record<string, string>; totalBase: string | null; baseCurrency: string;
   categories: TCategory[]; projects: Array<{ id: string; name: string }>;
-  version: number; changed: () => Promise<void>; error: string | null;
+  version: number; changed: () => Promise<void>; changedAll: () => Promise<void>; adjust: (accountId: string, delta: number) => void; error: string | null;
   toast: (m: string, err?: boolean) => void;
 }
 const TC = createContext<Ctx>(null as unknown as Ctx);
@@ -42,9 +42,16 @@ export function TalkoShell() {
     } catch (e: any) { setError(e.message); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  const loadAccounts = useCallback(async () => {
+    try { const a = await get('/talko/accounts'); setData((d) => ({ ...d, accounts: a.accounts, totals: a.totalsByCurrency, totalBase: a.totalBase, baseCurrency: a.baseCurrency })); setError(null); }
+    catch (e: any) { setError(e.message); }
+  }, []);
   const ctx: Ctx = {
     ...data, version, error,
-    changed: async () => { await load(); setVersion((v) => v + 1); },
+    // after a write only balances and lists change; categories/projects are reloaded only when they were edited
+    changed: async () => { setVersion((v) => v + 1); await loadAccounts(); },
+    changedAll: async () => { await load(); setVersion((v) => v + 1); },
+    adjust: (accountId, delta) => setData((d) => ({ ...d, accounts: d.accounts.map((a) => a.id === accountId ? { ...a, balance: (Math.round((Number(a.balance) + delta) * 100) / 100).toFixed(2) } : a) })),
     toast: (m, err) => { setToastMsg({ m, err }); window.clearTimeout(timer.current); timer.current = window.setTimeout(() => setToastMsg(null), err ? 5000 : 2200); },
   };
   const nav: Array<[Tab, string, JSX.Element, string]> = [
@@ -204,19 +211,25 @@ const PAGE = 4;
 
 function TEntry({ type }: { type: 'income' | 'expense' }) {
   const { t } = useT();
-  const { accounts, categories, version, changed, toast } = useTalko();
+  const { accounts, categories, version, changed, toast, adjust } = useTalko();
   const [expr, setExpr] = useState('');
+  // optimistic UI: new entries show at once, deleted ones vanish at once; TALKO is updated in the background
+  const [pendingTx, setPendingTx] = useState<TTx[]>([]);
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [overrides, setOverrides] = useState<Record<string, Partial<TTx>>>({});
   const [accountId, setAccountId] = useState(() => { try { return localStorage.getItem('gok.talko.acc.' + type) ?? ''; } catch { return ''; } });
   const [page, setPage] = useState(0);
   const [open, setOpen] = useState<string | null>(null);
   const [all, setAll] = useState(false);
   const [folder, setFolder] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const busy = false;
   const [voice, setVoice] = useState(false);
   const [sel, setSel] = useState<string | null>(null);
   const [edit, setEdit] = useState<{ id: string; kind: 'comment' | 'date'; value: string } | null>(null);
   useEffect(() => { if (accounts.length && !accounts.some((a) => a.id === accountId)) setAccountId(accounts[0].id); }, [accounts, accountId]);
   const today = useAsyncT(() => get('/talko/transactions' + qs({ from: todayISO(), to: todayISO(), type })), [version, type]);
+  const loaded: TTx[] = today.data?.items ?? [];
+  const items: TTx[] = [...pendingTx.filter((p) => !loaded.some((x) => x.id === p.id)), ...loaded].filter((x) => !hidden.has(x.id)).map((x) => overrides[x.id] ? { ...x, ...overrides[x.id] } : x).filter((x) => x.localDate === todayISO() || !overrides[x.id]?.localDate);
   const exp = type === 'expense';
   const amount = /[+\-×÷]/.test(expr) ? (evalExpr(expr) ?? '') : expr;
   const hasAmount = /[1-9]/.test(amount);
@@ -235,7 +248,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   const folders = folderIds(categories);
   const cats = folder ? [...categories.filter((c) => c.id === folder), ...categories.filter((c) => c.parentId === folder)] : mainCategories(categories, type).filter((c) => !c.parentId || !folders.has(c.parentId) || !mainCategories(categories, type).some((m) => m.id === c.parentId));
   const folderName = folder ? categories.find((c) => c.id === folder)?.name : null;
-  const todayTotal = (today.data?.items ?? []).reduce((s: Record<string, number>, x: TTx) => ({ ...s, [x.currency]: Math.round(((s[x.currency] ?? 0) + Number(x.amount)) * 100) / 100 }), {});
+  const todayTotal = items.reduce((s: Record<string, number>, x: TTx) => ({ ...s, [x.currency]: Math.round(((s[x.currency] ?? 0) + Number(x.amount)) * 100) / 100 }), {});
   const totalTxt = Object.entries(todayTotal).map(([c, v]) => money((v as number).toFixed(2), c)).join(' + ') || money('0', 'UAH');
   const pick = (id: string) => {
     if (id !== folder && folders.has(id) && categories.some((c) => c.parentId === id)) { setAll(false); setFolder(id); return; }
@@ -244,39 +257,55 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
     void quickSave(id);
   };
   /** One tap on a category records the expense right away (the tap is the confirmation), like «Деньги ОК». */
-  async function quickSave(categoryId: string) {
+  function quickSave(categoryId: string) {
     const acc = accounts.find((a) => a.id === accountId);
     if (!acc) return;
-    setBusy(true);
-    try {
-      const body = { type, amount: amount.replace(',', '.'), accountId, categoryId, projectId: null, description: '', date: todayISO() };
-      let r = await post('/talko/transactions', body);
-      if (r.status === 'needs_confirmation') r = await post('/talko/transactions', { ...body, confirmationToken: r.confirmationToken });
-      newId.current = r.id ?? 'latest';
-      const cat = categories.find((c) => c.id === categoryId)?.name ?? '';
-      setExpr(''); setFolder(null);
-      await changed();
-      toast(`Записано: ${money(amount.replace(',', '.'), acc.currency)} · ${cat} · ${acc.name}`);
-    } catch (e: any) {
-      toast('Не записано: ' + (e?.message ?? 'помилка'));
-    } finally { setBusy(false); }
+    const n = amount.replace(',', '.');
+    const cat = categories.find((c) => c.id === categoryId)?.name ?? '';
+    const tmp: TTx = { id: 'tmp-' + Date.now(), type, amount: n, currency: acc.currency, accountId, categoryName: cat, comment: '', counterparty: '', occurredAt: new Date().toISOString(), localDate: todayISO() };
+    const delta = (exp ? -1 : 1) * Number(n);
+    setPendingTx((p) => [tmp, ...p]); setSel(tmp.id); adjust(accountId, delta);
+    setExpr(''); setFolder(null);
+    void (async () => {
+      try {
+        const r = await post('/talko/transactions', { type, amount: n, accountId, categoryId, projectId: null, description: '', date: todayISO(), autoConfirm: true });
+        if (r.status !== 'saved') throw new Error('TALKO не підтвердив');
+        const real = r.id ? { ...tmp, id: String(r.id) } : tmp;
+        setPendingTx((p) => p.map((x) => x.id === tmp.id ? real : x));
+        setSel((s) => s === tmp.id ? real.id : s);
+        if (!r.id) newId.current = 'latest';
+        await changed();
+        setPendingTx((p) => p.filter((x) => x.id !== real.id && x.id !== tmp.id));
+      } catch (e: any) {
+        setPendingTx((p) => p.filter((x) => x.id !== tmp.id)); adjust(accountId, -delta);
+        toast(`Не записано ${money(n, acc.currency)} · ${cat}: ` + (e?.message ?? 'помилка'), true);
+      }
+    })();
   }
   // after a quick save the new entry is highlighted with ✎ / 📅 actions, like «Деньги ОК»
   const newId = useRef<string | null>(null);
   useEffect(() => {
-    const items: TTx[] = today.data?.items ?? [];
-    if (!newId.current || !items.length) return;
-    const found = newId.current !== 'latest' ? items.find((x) => x.id === newId.current) : null;
-    setSel((found ?? [...items].sort((a, b) => String(b.occurredAt ?? '').localeCompare(String(a.occurredAt ?? '')))[0]).id);
+    const list: TTx[] = today.data?.items ?? [];
+    if (!newId.current || !list.length) return;
+    const found = newId.current !== 'latest' ? list.find((x) => x.id === newId.current) : null;
+    setSel((found ?? [...list].sort((a, b) => String(b.occurredAt ?? '').localeCompare(String(a.occurredAt ?? '')))[0]).id);
     newId.current = null;
   }, [today.data]);
-  async function saveEdit() {
+  function saveEdit() {
     if (!edit) return;
-    setBusy(true);
-    try {
-      await api('PATCH', '/talko/transactions/' + encodeURIComponent(edit.id), edit.kind === 'comment' ? { description: edit.value } : { date: edit.value });
-      setEdit(null); await changed(); toast(edit.kind === 'comment' ? 'Коментар збережено' : 'Дату змінено');
-    } catch (e: any) { toast('Не збережено: ' + (e?.message ?? 'помилка')); } finally { setBusy(false); }
+    const e0 = edit;
+    setEdit(null);
+    setOverrides((o) => ({ ...o, [e0.id]: e0.kind === 'comment' ? { comment: e0.value } : { localDate: e0.value } }));
+    void (async () => {
+      try {
+        await api('PATCH', '/talko/transactions/' + encodeURIComponent(e0.id), e0.kind === 'comment' ? { description: e0.value } : { date: e0.value });
+        await changed();
+        setOverrides((o) => { const n = { ...o }; delete n[e0.id]; return n; });
+      } catch (err: any) {
+        setOverrides((o) => { const n = { ...o }; delete n[e0.id]; return n; });
+        toast('Не збережено: ' + (err?.message ?? 'помилка'), true);
+      }
+    })();
   }
   // long press on a category opens the full form (comment, date, project)
   const longPressed = useRef(false);
@@ -322,14 +351,22 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
             <div className="m-hint">{busy ? 'Записую в TALKO…' : 'Натисніть статтю — витрата запишеться. Утримайте — додати коментар чи дату.'}</div>
           </div>
         ) : (
-          <TxList items={today.data?.items ?? []} compact selected={sel} onSelect={(id) => setSel(sel === id ? null : id)}
+          <TxList items={items} compact selected={sel} onSelect={(id) => setSel(sel === id ? null : id)}
             onDelete={async (i) => {
-              try { await api('DELETE', '/talko/transactions/' + encodeURIComponent(i.id)); if (sel === i.id) setSel(null); await changed(); toast(`Видалено: ${i.categoryName ?? ''} ${money(i.amount, i.currency)}`); }
-              catch (e: any) { toast('Не видалено: ' + (e?.message ?? 'помилка'), true); }
+              if (i.id.startsWith('tmp-')) { toast('Зачекайте секунду — витрата ще записується'); return; }
+              const delta = (i.type === 'expense' ? 1 : -1) * Number(i.amount);
+              setHidden((h) => new Set(h).add(i.id)); adjust(i.accountId, delta); if (sel === i.id) setSel(null);
+              void (async () => {
+                try { await api('DELETE', '/talko/transactions/' + encodeURIComponent(i.id)); await changed(); }
+                catch (e: any) {
+                  setHidden((h) => { const n = new Set(h); n.delete(i.id); return n; }); adjust(i.accountId, -delta);
+                  toast('Не видалено: ' + (e?.message ?? 'помилка'), true);
+                }
+              })();
             }}
             actions={(i) => (<>
-              <button onClick={() => setEdit({ id: i.id, kind: 'comment', value: i.comment === '—' ? '' : (i.comment ?? '') })} aria-label="Коментар">✎<span>Коментар</span></button>
-              <button onClick={() => setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() })} aria-label="Дата">📅<span>Дата</span></button>
+              <button disabled={i.id.startsWith('tmp-')} onClick={() => setEdit({ id: i.id, kind: 'comment', value: i.comment === '—' ? '' : (i.comment ?? '') })} aria-label="Коментар">✎<span>Коментар</span></button>
+              <button disabled={i.id.startsWith('tmp-')} onClick={() => setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() })} aria-label="Дата">📅<span>Дата</span></button>
             </>)} />
         )}
       </div>
@@ -375,7 +412,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
 
 /** Group categories into folders: create a folder, move a category into it (TALKO asks to confirm). */
 function FolderManager({ type }: { type: 'income' | 'expense' }) {
-  const { categories, changed, toast } = useTalko();
+  const { categories, changedAll, toast } = useTalko();
   const [openMgr, setOpenMgr] = useState(false);
   const [name, setName] = useState('');
   const [pending, setPending] = useState<{ catId: string; parentId: string | null; token: string } | null>(null);
@@ -393,7 +430,7 @@ function FolderManager({ type }: { type: 'income' | 'expense' }) {
     try {
       const r = await post('/talko/categories', { name: name.trim(), type, parentId: root?.id ?? null });
       if (r.id) rememberFolder(r.id);
-      setName(''); await changed(); toast('Папку створено в TALKO');
+      setName(''); await changedAll(); toast('Папку створено в TALKO');
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   }
   async function move(catId: string, parentId: string | null, token?: string) {
@@ -401,7 +438,7 @@ function FolderManager({ type }: { type: 'income' | 'expense' }) {
     try {
       const r = await api('PATCH', '/talko/categories/' + encodeURIComponent(catId), { parentId, confirmationToken: token });
       if (r.status === 'needs_confirmation') { setPending({ catId, parentId, token: r.confirmationToken }); return; }
-      setPending(null); await changed(); toast('Перенесено в TALKO');
+      setPending(null); await changedAll(); toast('Перенесено в TALKO');
     } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   }
   if (!openMgr) return <button className="btn small" style={{ marginBottom: 10 }} onClick={() => setOpenMgr(true)}>📁 Папки статей</button>;
@@ -594,7 +631,7 @@ function TTransferScreen() {
     setBusy(true);
     try {
       const body: any = { fromAccountId: fromId, toAccountId: toId, amount: normalizeAmountInput(amount), amountTo: fx ? normalizeAmountInput(amountTo) : undefined, description: comment.trim() || undefined, date: date !== todayISO() ? date : undefined };
-      let r = await post('/talko/transfers', body);
+      let r = await post('/talko/transfers', { ...body, autoConfirm: true });
       for (let i = 0; i < 2 && r.status === 'needs_confirmation'; i++) r = await post('/talko/transfers', { ...body, confirmationToken: r.confirmationToken });
       if (r.status !== 'saved') throw new Error('TALKO не підтвердив переказ');
       setAmount(''); setAmountTo(''); setComment(''); setDate(todayISO());
