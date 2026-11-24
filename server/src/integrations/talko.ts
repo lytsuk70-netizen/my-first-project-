@@ -303,17 +303,18 @@ export async function editTransaction(userId: string, id: string, input: { descr
   return { status: 'saved' as const, result: r };
 }
 
-export async function transfer(userId: string, input: { fromAccountId: string; toAccountId: string; amount: string; amountTo?: string; description?: string }, confirmationToken?: string) {
+export async function transfer(userId: string, input: { fromAccountId: string; toAccountId: string; amount: string; amountTo?: string; description?: string; date?: string }, confirmationToken?: string) {
   const base: Json = {
     fromAccountId: input.fromAccountId, toAccountId: input.toAccountId, amount: Number(input.amount),
     ...(input.amountTo ? { amountTo: Number(input.amountTo) } : {}), ...(input.description ? { description: input.description } : {}),
+    ...(input.date ? { date: input.date.slice(0, 10) } : {}),
   };
   if (!confirmationToken) {
     // dry run: balances before/after, nothing is written
     const preview = await talko(userId, 'talko_transfer_between_accounts', { ...base, dryRun: true });
     return { status: 'needs_confirmation' as const, confirmationToken: confirmationOf(preview) ?? 'dry-run-ok', preview };
   }
-  const r = await talko(userId, 'talko_transfer_between_accounts', confirmationToken === 'dry-run-ok' ? base : { ...base, confirmationToken });
+  const r = await talko(userId, 'talko_transfer_between_accounts', confirmationToken === 'dry-run-ok' ? base : { ...base, confirmationToken, confirmationReason: 'Підтверджено в застосунку «Гроші ОК»' });
   const token = confirmationOf(r);
   if (token && token !== confirmationToken && !r.id && !r.transferId) return { status: 'needs_confirmation' as const, confirmationToken: token, preview: r };
   return { status: 'saved' as const, result: r };

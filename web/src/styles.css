@@ -243,3 +243,22 @@ code.url { display: block; word-break: break-all; background: var(--surface-2); 
 .m-modal-btns { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
 .m-modal-btns button { border: 0; border-radius: 10px; height: 42px; background: #3a4a6a; color: #8ab4ff; font-size: 18px; }
 .m-modal-btns button.ok { background: #2f6fe0; color: #fff; }
+.acc-seg { margin: 10px 0 12px; }
+.m-picker-top { display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; text-align: center; padding: 6px 0 10px; }
+.m-picker-top button { border: 0; background: none; color: var(--accent); font-size: 30px; line-height: 1; }
+.m-check { color: var(--balance); font-weight: 700; }
+.m-trform { display: flex; flex-direction: column; }
+.m-lbl { font-size: 12px; color: var(--text-3); padding: 10px 4px 4px; }
+.m-accrow { display: flex; justify-content: space-between; align-items: center; border: 0; background: var(--surface); color: var(--text); padding: 12px; font-size: 16px; border-radius: 10px; text-align: left; }
+.m-trbtns { display: flex; flex-direction: column; gap: 8px; align-items: stretch; width: min(100%, 340px); margin: 16px auto 10px; }
+.m-gbtn { position: relative; display: block; height: 40px; line-height: 40px; border: 0; border-radius: 8px; background: #48484a; color: var(--text); text-align: center; font-size: 16px; width: 100%; box-sizing: border-box; padding: 0 10px; overflow: hidden; }
+.m-gbtn::placeholder { color: #8e8e93; }
+label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; }
+.m-sumrow { display: flex; gap: 8px; }
+.m-sumrow .m-gbtn { flex: 1; }
+.m-ok { width: 46px; height: 40px; border: 0; border-radius: 8px; background: #2f6fe0; color: #fff; font-size: 22px; flex: none; }
+.m-ok:disabled { opacity: .45; }
+.m-trlist { margin-top: 6px; }
+.m-day { text-align: center; font-size: 12px; color: var(--text-3); background: var(--surface); padding: 4px; margin: 6px 0 2px; border-radius: 6px; }
+.m-tr { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px; padding: 8px 4px; border-bottom: 1px solid var(--line, #2c2c2e); }
+.m-tr small { color: var(--text-3); }

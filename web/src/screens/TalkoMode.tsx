@@ -466,26 +466,138 @@ function TxList({ items, compact, selected, onSelect, actions }: { items: TTx[];
 function TAccounts() {
   const { t } = useT();
   const { accounts, totals, totalBase, baseCurrency } = useTalko();
-  const [transfer, setTransfer] = useState(false);
+  const [view, setView] = useState<'accounts' | 'transfers' | 'archive'>(() => (localStorage.getItem('gok.accView') as any) || 'accounts');
+  const go = (v: typeof view) => { setView(v); try { localStorage.setItem('gok.accView', v); } catch { /* */ } };
   return (
     <>
-      <div className="topbar"><h1>{t.accounts}</h1><button className="btn primary small" onClick={() => setTransfer(true)}>⇄ {t.transfer}</button></div>
-      <div className="card">
-        <div className="faint">{t.netWorth} (TALKO)</div>
-        {totalBase && <div className="hero c-balance num">{money(totalBase, baseCurrency)}</div>}
-        {Object.entries(totals).map(([c, v]) => <div key={c} className="faint num">{money(v, c)}</div>)}
+      <div className="seg acc-seg">
+        <button className={view === 'accounts' ? 'on' : ''} onClick={() => go('accounts')}>💳 Рахунки</button>
+        <button className={view === 'transfers' ? 'on' : ''} onClick={() => go('transfers')}>⇄ Перекази</button>
+        <button className={view === 'archive' ? 'on' : ''} onClick={() => go('archive')}>🗂 Архів</button>
       </div>
-      <div className="section-title">{t.accounts}</div>
+      {view === 'accounts' && (<>
+        <div className="list acc-list">
+          {accounts.map((a) => (
+            <div key={a.id} className="item">
+              <div className="main"><div className="t1">{a.name}</div></div>
+              <div className="amt num c-balance">{money(a.balance, a.currency)}</div>
+            </div>
+          ))}
+        </div>
+        <div className="card" style={{ marginTop: 10 }}>
+          <div className="faint">{t.netWorth}</div>
+          {totalBase && <div className="hero c-balance num">{money(totalBase, baseCurrency)}</div>}
+          {Object.entries(totals).map(([c, v]) => <div key={c} className="faint num">{money(v, c)}</div>)}
+        </div>
+      </>)}
+      {view === 'transfers' && <TTransferScreen />}
+      {view === 'archive' && <TTransferList days={60} />}
+    </>
+  );
+}
+
+interface TTr { id: number; fromAccountId: string; toAccountId: string; amount: string; amountTo: string | null; description: string; date: string }
+
+function AccountPicker({ title, value, onPick, onClose }: { title: string; value: string; onPick: (id: string) => void; onClose: () => void }) {
+  const { accounts } = useTalko();
+  return (
+    <div className="m-picker">
+      <div className="m-picker-top"><button onClick={onClose} aria-label="Назад">‹</button><b>{title}</b><span /></div>
       <div className="list acc-list">
         {accounts.map((a) => (
-          <div key={a.id} className="item">
-            <span className="ic">{a.type === 'cash' ? '💵' : a.type === 'card' ? '💳' : a.type === 'savings' ? '🐷' : '🏦'}</span>
-            <div className="main"><div className="t1">{a.name}</div><div className="t2">{t.types[a.type] ?? a.type}</div></div>
-            <div className="amt num c-balance">{money(a.balance, a.currency)}</div>
+          <div key={a.id} className="item" onClick={() => { onPick(a.id); onClose(); }}>
+            <div className="main"><div className="t1">{a.name}</div></div>
+            <div className="amt num c-balance">{money(a.balance, a.currency)}{a.id === value && <span className="m-check"> ✓</span>}</div>
           </div>
         ))}
       </div>
-      {transfer && <TTransfer onClose={() => setTransfer(false)} />}
+    </div>
+  );
+}
+
+function TTransferList({ days }: { days?: number }) {
+  const { t, lang } = useT();
+  const { accounts, version } = useTalko();
+  const list = useAsyncT<TTr[]>(() => get('/talko/transfers'), [version]);
+  const name = (id: string) => accounts.find((a) => a.id === id)?.name ?? '—';
+  const cur = (id: string) => accounts.find((a) => a.id === id)?.currency ?? 'UAH';
+  const items = (list.data ?? []).slice(0, days ? 200 : 30);
+  const groups: Array<[string, TTr[]]> = [];
+  for (const x of items) { const g = groups.find((q) => q[0] === x.date); if (g) g[1].push(x); else groups.push([x.date, [x]]); }
+  if (list.loading && !list.data) return <div className="faint" style={{ padding: 12 }}>Завантаження…</div>;
+  if (!items.length) return <div className="faint" style={{ padding: 12 }}>Переказів, зроблених у застосунку, ще немає.</div>;
+  return (
+    <div className="m-trlist">
+      {groups.map(([d, xs]) => (
+        <div key={d}>
+          <div className="m-day">{fmtDay(d, lang, t)}</div>
+          {xs.map((x) => {
+            const fx = x.amountTo && cur(x.fromAccountId) !== cur(x.toAccountId);
+            return (
+              <div key={x.id} className="m-tr">
+                <div><div>{name(x.fromAccountId)} → {name(x.toAccountId)}</div><small>{x.description || fmtDay(d, lang, t)}</small></div>
+                <div className="num c-expense">{money(x.amount, cur(x.fromAccountId))}{fx && ` (${money(x.amountTo!, cur(x.toAccountId))})`}</div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TTransferScreen() {
+  const { accounts, changed, toast } = useTalko();
+  const [fromId, setFromId] = useState(() => localStorage.getItem('gok.tr.from') ?? '');
+  const [toId, setToId] = useState(() => localStorage.getItem('gok.tr.to') ?? '');
+  const [pick, setPick] = useState<'from' | 'to' | null>(null);
+  const [date, setDate] = useState(todayISO());
+  const [comment, setComment] = useState('');
+  const [amount, setAmount] = useState('');
+  const [amountTo, setAmountTo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const from = accounts.find((a) => a.id === fromId); const to = accounts.find((a) => a.id === toId);
+  const fx = !!(from && to && from.currency !== to.currency);
+  const n = (v: string) => Number(normalizeAmountInput(v));
+  const valid = !!(from && to && from.id !== to.id && n(amount) > 0 && (!fx || n(amountTo) > 0));
+  const setAcc = (k: 'from' | 'to', id: string) => {
+    if (k === 'from') { setFromId(id); try { localStorage.setItem('gok.tr.from', id); } catch { /* */ } }
+    else { setToId(id); try { localStorage.setItem('gok.tr.to', id); } catch { /* */ } }
+  };
+  async function submit() {
+    if (!valid || busy) return;
+    setBusy(true);
+    try {
+      const body: any = { fromAccountId: fromId, toAccountId: toId, amount: normalizeAmountInput(amount), amountTo: fx ? normalizeAmountInput(amountTo) : undefined, description: comment.trim() || undefined, date: date !== todayISO() ? date : undefined };
+      let r = await post('/talko/transfers', body);
+      for (let i = 0; i < 2 && r.status === 'needs_confirmation'; i++) r = await post('/talko/transfers', { ...body, confirmationToken: r.confirmationToken });
+      if (r.status !== 'saved') throw new Error('TALKO не підтвердив переказ');
+      setAmount(''); setAmountTo(''); setComment(''); setDate(todayISO());
+      await changed();
+      toast(`Переказ: ${from!.name} → ${to!.name} · ${money(normalizeAmountInput(amount), from!.currency)}`);
+    } catch (e: any) { toast('Не записано: ' + (e?.message ?? 'помилка'), true); } finally { setBusy(false); }
+  }
+  if (pick) return <AccountPicker title={pick === 'from' ? 'Списати з рахунку' : 'Зарахувати на рахунок'} value={pick === 'from' ? fromId : toId} onPick={(id) => setAcc(pick, id)} onClose={() => setPick(null)} />;
+  return (
+    <>
+      <div className="m-trform">
+        <div className="m-lbl">Списати з рахунку</div>
+        <button className="m-accrow" onClick={() => setPick('from')}><span>{from?.name ?? 'Оберіть рахунок'}</span><span className="num c-balance">{from ? money(from.balance, from.currency) : ''} ›</span></button>
+        <div className="m-lbl">Зарахувати на рахунок</div>
+        <button className="m-accrow" onClick={() => setPick('to')}><span>{to?.name ?? 'Оберіть рахунок'}</span><span className="num c-balance">{to ? money(to.balance, to.currency) : ''} ›</span></button>
+        <div className="m-trbtns">
+          <label className="m-gbtn">{date === todayISO() ? 'Сьогодні' : fmtDay(date, 'uk', { today: 'Сьогодні', yesterday: 'Вчора' })}<input type="date" value={date} max={todayISO()} onChange={(e) => e.target.value && setDate(e.target.value)} /></label>
+          <input className="m-gbtn" placeholder="Коментар" value={comment} maxLength={500} onChange={(e) => setComment(e.target.value)} />
+          <div className="m-sumrow">
+            <input className="m-gbtn num" inputMode="decimal" placeholder={fx ? `Сума, ${from!.currency}` : 'Сума'} value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^\d.,]/g, ''))} onKeyDown={(e) => e.key === 'Enter' && submit()} />
+            <button className="m-ok" disabled={!valid || busy} onClick={submit} aria-label="Провести переказ">{busy ? '…' : '✓'}</button>
+          </div>
+          {fx && <input className="m-gbtn num" inputMode="decimal" placeholder={`Отримано, ${to!.currency}`} value={amountTo} onChange={(e) => setAmountTo(e.target.value.replace(/[^\d.,]/g, ''))} />}
+          {fx && n(amount) > 0 && n(amountTo) > 0 && <div className="faint" style={{ textAlign: 'center' }}>Курс: {(Math.max(n(amount), n(amountTo)) / Math.min(n(amount), n(amountTo))).toFixed(4)}</div>}
+          {from && to && from.id === to.id && <div className="faint" style={{ textAlign: 'center' }}>Оберіть різні рахунки</div>}
+        </div>
+      </div>
+      <TTransferList />
     </>
   );
 }

@@ -353,9 +353,24 @@ export function createApp() {
     res.json({ command: cmd, answer });
   }));
   api.post('/talko/transfers', h(async (req, res) => {
-    const b = z.object({ fromAccountId: text(200).min(1), toAccountId: text(200).min(1), amount, amountTo: amount.optional(), description: text(500).optional(), confirmationToken: text(500).optional() }).parse(req.body);
+    const b = z.object({ fromAccountId: text(200).min(1), toAccountId: text(200).min(1), amount, amountTo: amount.optional(), description: text(500).optional(), date: isoDate.optional(), confirmationToken: text(500).optional() }).parse(req.body);
     if (b.fromAccountId === b.toAccountId) return res.status(400).json({ error: 'invalid', message: 'Рахунки мають відрізнятися' });
-    res.json(await TK.transfer(uid(req), b, b.confirmationToken));
+    const r = await TK.transfer(uid(req), b, b.confirmationToken);
+    if (r.status === 'saved') {
+      const x: any = r.result ?? {};
+      await pool.query(
+        'INSERT INTO talko_transfer_log (user_id, talko_id, from_account_id, to_account_id, amount, amount_to, description, op_date) VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8::date, CURRENT_DATE))',
+        [uid(req), String(x.transferId ?? x.id ?? x.transfer?.id ?? '') || null, b.fromAccountId, b.toAccountId, b.amount, b.amountTo ?? null, b.description ?? '', b.date ?? null],
+      ).catch((e) => console.error('transfer log', e));
+    }
+    res.json(r);
+  }));
+  api.get('/talko/transfers', h(async (req, res) => {
+    const { rows } = await pool.query(
+      "SELECT id, talko_id AS \"talkoId\", from_account_id AS \"fromAccountId\", to_account_id AS \"toAccountId\", amount::text, amount_to::text AS \"amountTo\", description, to_char(op_date, 'YYYY-MM-DD') AS date FROM talko_transfer_log WHERE user_id = $1 AND op_date >= CURRENT_DATE - 60 ORDER BY op_date DESC, id DESC LIMIT 200",
+      [uid(req)],
+    );
+    res.json(rows);
   }));
 
   // ---------- Excel ----------
