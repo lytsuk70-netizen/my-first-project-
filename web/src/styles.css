@@ -281,3 +281,8 @@ label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width:
 .m-sync.ok { color: #30d158; font-size: 16px; opacity: .7; }
 .m-sync.err { color: #ff9f0a; }
 .m-pend { color: var(--accent); }
+.m-histlink { display: block; margin: 14px auto 18px; border: 0; background: none; color: var(--accent); font-size: 17px; }
+.m-hist { position: fixed; inset: 0; z-index: 55; background: var(--bg, #000); padding: calc(env(safe-area-inset-top) + 6px) 12px calc(env(safe-area-inset-bottom) + 8px); display: flex; flex-direction: column; gap: 8px; }
+.m-histbody { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.m-histfilters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.m-histfilters .m-accrow { font-size: 15px; gap: 6px; min-width: 0; }

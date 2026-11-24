@@ -258,6 +258,13 @@ function evalExpr(expr: string): string | null {
 }
 
 const PAGE = 4;
+/** YYYY-MM-DD of today + offset days, in the phone's time zone. */
+function isoDay(offset = 0) { const d = new Date(); d.setDate(d.getDate() + offset); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function sumByCurrency(list: TTx[]) {
+  const m: Record<string, number> = {};
+  for (const x of list) m[x.currency] = Math.round(((m[x.currency] ?? 0) + Number(x.amount)) * 100) / 100;
+  return Object.entries(m).map(([c, v]) => money(v.toFixed(2), c)).join(' + ');
+}
 
 function TEntry({ type }: { type: 'income' | 'expense' }) {
   const { t } = useT();
@@ -271,6 +278,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   const busy = false;
   const [voice, setVoice] = useState(false);
   const [sel, setSel] = useState<string | null>(null);
+  const [hist, setHist] = useState(false);
   const [edit, setEdit] = useState<{ id: string; kind: 'comment' | 'date'; value: string } | null>(null);
   useEffect(() => { if (accounts.length && !accounts.some((a) => a.id === accountId)) setAccountId(accounts[0].id); }, [accounts, accountId]);
   // today's list: shown at once from the phone's memory, refreshed from TALKO in the background,
@@ -280,7 +288,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   const setBase = useCallback((f: (b: TTx[]) => TTx[]) => setBaseRaw((b) => { const n = f(b); writeCache(cacheKey, { d: todayISO(), items: n }); return n; }), [cacheKey]);
   useEffect(() => {
     let alive = true;
-    get('/talko/transactions' + qs({ from: todayISO(), to: todayISO(), type }))
+    get('/talko/transactions' + qs({ from: isoDay(-1), to: todayISO(), type }))
       .then((r) => { if (alive && !SY.ops().length) setBase(() => r.items ?? []); })
       .catch(() => { /* offline: keep what we have */ });
     return () => { alive = false; };
@@ -288,13 +296,13 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   useEffect(() => SY.subscribe((e) => {
     if (e.type !== 'done') return;
     const op = e.op;
-    if (op.kind === 'add' && op.item.type === type && op.item.localDate === todayISO()) {
+    if (op.kind === 'add' && op.item.type === type && op.item.localDate >= isoDay(-1)) {
       const id = e.realId ?? op.tmpId;
       setBase((b) => [{ ...op.item, id }, ...b.filter((x) => x.id !== id)]);
       setSel((s) => s === op.tmpId ? id : s);
     }
     if (op.kind === 'delete') setBase((b) => b.filter((x) => x.id !== op.txId));
-    if (op.kind === 'edit') setBase((b) => b.map((x) => x.id !== op.txId ? x : { ...x, ...(op.body.description !== undefined ? { comment: op.body.description } : {}), ...(op.body.date ? { localDate: op.body.date } : {}) }).filter((x) => x.localDate === todayISO()));
+    if (op.kind === 'edit') setBase((b) => b.map((x) => x.id !== op.txId ? x : { ...x, ...(op.body.description !== undefined ? { comment: op.body.description } : {}), ...(op.body.date ? { localDate: op.body.date } : {}) }).filter((x) => x.localDate >= isoDay(-1)));
   }), [type, setBase]);
   const deleting = new Set<string>(outbox.flatMap((o) => o.kind === 'delete' ? [o.txId] : []));
   const editsOf = (id: string) => outbox.filter((o): o is Extract<Op, { kind: 'edit' }> => o.kind === 'edit' && o.txId === id);
@@ -304,8 +312,8 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
     ...base,
   ].filter((x) => !deleting.has(x.id))
     .map((x) => editsOf(x.id).reduce((a, o) => ({ ...a, ...(o.body.description !== undefined ? { comment: o.body.description } : {}), ...(o.body.date ? { localDate: o.body.date } : {}) }), x))
-    .filter((x) => x.localDate === todayISO())
-    .sort((a, b) => String(b.time ?? '').localeCompare(String(a.time ?? '')));
+    .filter((x) => x.localDate >= isoDay(-1))
+    .sort((a, b) => String(b.localDate).localeCompare(String(a.localDate)) || String(b.time ?? '').localeCompare(String(a.time ?? '')));
   const exp = type === 'expense';
   const amount = /[+\-×÷]/.test(expr) ? (evalExpr(expr) ?? '') : expr;
   const hasAmount = /[1-9]/.test(amount);
@@ -324,7 +332,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   const folders = folderIds(categories);
   const cats = folder ? [...categories.filter((c) => c.id === folder), ...categories.filter((c) => c.parentId === folder)] : mainCategories(categories, type).filter((c) => !c.parentId || !folders.has(c.parentId) || !mainCategories(categories, type).some((m) => m.id === c.parentId));
   const folderName = folder ? categories.find((c) => c.id === folder)?.name : null;
-  const todayTotal = items.reduce((s: Record<string, number>, x: TTx) => ({ ...s, [x.currency]: Math.round(((s[x.currency] ?? 0) + Number(x.amount)) * 100) / 100 }), {});
+  const todayTotal = items.filter((x) => x.localDate === todayISO()).reduce((s: Record<string, number>, x: TTx) => ({ ...s, [x.currency]: Math.round(((s[x.currency] ?? 0) + Number(x.amount)) * 100) / 100 }), {});
   const totalTxt = Object.entries(todayTotal).map(([c, v]) => money((v as number).toFixed(2), c)).join(' + ') || money('0', 'UAH');
   const pick = (id: string) => {
     if (id !== folder && folders.has(id) && categories.some((c) => c.parentId === id)) { setAll(false); setFolder(id); return; }
@@ -406,7 +414,8 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
             <div className="m-hint">{busy ? 'Записую в TALKO…' : 'Натисніть статтю — витрата запишеться. Утримайте — додати коментар чи дату.'}</div>
           </div>
         ) : (
-          <TxList items={items} compact selected={sel} pending={pendingIds} onSelect={(id) => setSel(sel === id ? null : id)}
+          <div>
+          <TxList items={items} compact dayHeads selected={sel} pending={pendingIds} onSelect={(id) => setSel(sel === id ? null : id)}
             onYesterday={(i) => {
               const d = new Date(); d.setDate(d.getDate() - 1);
               moveDate(i, `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
@@ -420,6 +429,8 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
               <button onClick={() => setEdit({ id: i.id, kind: 'comment', value: cleanComment(i.comment, i.categoryName, accounts.find((a) => a.id === i.accountId)?.name) })} aria-label="Коментар">✎<span>Коментар</span></button>
               <button onClick={() => setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() })} aria-label="Дата">📅<span>Дата</span></button>
             </>)} />
+          <button className="m-histlink" onClick={() => setHist(true)}>Історія</button>
+          </div>
         )}
       </div>
       <div className="m-pad">
@@ -444,6 +455,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
       )}
       {open && <TxSheet type={type} amount={amount.replace(',', '.')} accountId={accountId} categoryId={open} onClose={() => { setOpen(null); setExpr(''); setFolder(null); }} />}
       {voice && <TVoice defaultType={type} onClose={() => setVoice(false)} />}
+      {hist && <THistory type={type} onClose={() => setHist(false)} />}
       {edit && (
         <div className="m-modal" onClick={() => setEdit(null)}>
           <div className="m-modal-box" onClick={(e) => e.stopPropagation()}>
@@ -549,7 +561,7 @@ function cleanComment(c: string | null | undefined, cat?: string | null, acc?: s
   return x;
 }
 
-function TxList({ items, compact, selected, onSelect, actions, onDelete, onYesterday, onDate, pending }: { items: TTx[]; compact?: boolean; pending?: Set<string>; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode; onDelete?: (i: TTx) => Promise<void>; onYesterday?: (i: TTx) => void; onDate?: (i: TTx) => void }) {
+function TxList({ items, compact, dayHeads, selected, onSelect, actions, onDelete, onYesterday, onDate, pending }: { items: TTx[]; compact?: boolean; dayHeads?: boolean; pending?: Set<string>; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode; onDelete?: (i: TTx) => Promise<void>; onYesterday?: (i: TTx) => void; onDate?: (i: TTx) => void }) {
   const { t, lang } = useT();
   const { accounts } = useTalko();
   // swipe left on an entry reveals the red trash button, like «Деньги ОК»
@@ -576,7 +588,8 @@ function TxList({ items, compact, selected, onSelect, actions, onDelete, onYeste
     <>
       {days.map(([d, list]) => (
         <div key={d}>
-          {!compact && <div className="day-head"><span>{fmtDay(d, lang, t)}</span></div>}
+          {!compact && <div className="day-head"><span>{fmtDay(d, lang, t)}</span><span className="num">{sumByCurrency(list)}</span></div>}
+          {compact && dayHeads && d !== todayISO() && <div className="m-day">{d === isoDay(-1) ? (list[0]?.type === 'income' ? 'Отримано вчора' : 'Витрачено вчора') : fmtDay(d, lang, t)}: <b className="num">{sumByCurrency(list)}</b></div>}
           <div className="list">
             {list.map((i) => (
               <div key={i.id} className={'item' + (selected === i.id ? ' sel' : '') + (swiped === i.id ? ' swiped' : '') + (swipedR === i.id ? ' swiped-r' : '')} {...sw(i)}
@@ -796,6 +809,102 @@ function TTransfer({ onClose, draft }: { onClose: () => void; draft?: { fromAcco
 }
 
 // ---------- feed ----------
+
+// ---------- history (like «Деньги ОК»: month / year, by account, by category) ----------
+
+type Period = { kind: 'month'; ym: string } | { kind: 'year'; y: string };
+const periodRange = (p: Period): [string, string] => {
+  if (p.kind === 'year') return [`${p.y}-01-01`, `${p.y}-12-31`];
+  const [y, m] = p.ym.split('-').map(Number);
+  return [`${p.ym}-01`, `${p.ym}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`];
+};
+const periodName = (p: Period) => {
+  if (p.kind === 'year') return `${p.y} рік`;
+  const [y, m] = p.ym.split('-').map(Number);
+  const s = new Date(y, m - 1, 1).toLocaleDateString('uk-UA', { month: 'long' });
+  return `${s.charAt(0).toUpperCase() + s.slice(1)} ${y}`;
+};
+
+function ListPicker({ title, items, value, onPick, onClose }: { title: string; items: Array<{ id: string; label: string; sub?: string; folder?: boolean }>; value: string; onPick: (id: string) => void; onClose: () => void }) {
+  return (
+    <div className="m-hist">
+      <div className="m-picker-top"><button onClick={onClose} aria-label="Назад">‹</button><b>{title}</b><span /></div>
+      <div className="list acc-list m-histbody">
+        {items.map((x) => (
+          <div key={x.id} className="item" onClick={() => { onPick(x.id); onClose(); }}>
+            <div className="main"><div className="t1" style={x.folder ? { fontWeight: 700 } : undefined}>{x.label}</div></div>
+            <div className="amt num c-balance">{x.sub ?? ''}{x.id === value && <span className="m-check"> ✓</span>}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function THistory({ type, onClose }: { type: 'income' | 'expense'; onClose: () => void }) {
+  const { accounts, categories, version, enqueue, outbox } = useTalko();
+  const [period, setPeriod] = useState<Period>({ kind: 'month', ym: todayISO().slice(0, 7) });
+  const [accountId, setAccountId] = useState('');
+  const [categoryId, setCategoryId] = useState('');
+  const [q, setQ] = useState('');
+  const [query, setQuery] = useState('');
+  const [search, setSearch] = useState(false);
+  const [pick, setPick] = useState<null | 'period' | 'account' | 'category'>(null);
+  useEffect(() => { const h = setTimeout(() => setQuery(q.trim()), 400); return () => clearTimeout(h); }, [q]);
+  const [from, to] = periodRange(period);
+  const key = `gok.hist.${type}.${from}.${to}.${accountId}.${categoryId}.${query}`;
+  const [items, setItems] = useState<TTx[] | null>(() => readCache<TTx[] | null>(key, null));
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setItems(readCache<TTx[] | null>(key, null)); setLoading(true);
+    get('/talko/transactions' + qs({ from, to, type, accountId: accountId || undefined, categoryId: categoryId || undefined, q: query || undefined }))
+      .then((r) => { if (!alive) return; setItems(r.items ?? []); writeCache(key, r.items ?? []); })
+      .catch(() => { /* offline: keep the cached list */ })
+      .finally(() => alive && setLoading(false));
+    return () => { alive = false; };
+  }, [key, version]); // eslint-disable-line react-hooks/exhaustive-deps
+  const deleting = new Set<string>(outbox.flatMap((o) => o.kind === 'delete' ? [o.txId] : []));
+  const shown = (items ?? []).filter((x) => !deleting.has(x.id));
+  const acc = accounts.find((a) => a.id === accountId);
+  const cat = categories.find((c) => c.id === categoryId);
+  const total = sumByCurrency(shown) || money('0', acc?.currency ?? 'UAH');
+  // months back to the start of last year, then whole years
+  const now = new Date();
+  const months: Period[] = Array.from({ length: 24 }, (_, i) => { const d = new Date(now.getFullYear(), now.getMonth() - i, 1); return { kind: 'month' as const, ym: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` }; });
+  const years: Period[] = [0, 1, 2].map((i) => ({ kind: 'year' as const, y: String(now.getFullYear() - i) }));
+  const pid = (p: Period) => p.kind === 'year' ? 'y' + p.y : 'm' + p.ym;
+  const cats = categories.filter((c) => c.type === type);
+  const ordered = cats.filter((c) => !c.parentId || !cats.some((x) => x.id === c.parentId)).flatMap((p) => [p, ...cats.filter((c) => c.parentId === p.id)]);
+  if (pick === 'period') return <ListPicker title="Період" value={pid(period)} onClose={() => setPick(null)}
+    items={[...years.map((p) => ({ id: pid(p), label: periodName(p), folder: true })), ...months.map((p) => ({ id: pid(p), label: periodName(p) }))]}
+    onPick={(id) => setPeriod(id.startsWith('y') ? { kind: 'year', y: id.slice(1) } : { kind: 'month', ym: id.slice(1) })} />;
+  if (pick === 'account') return <ListPicker title="Рахунок" value={accountId} onClose={() => setPick(null)}
+    items={[{ id: '', label: 'Усі рахунки' }, ...accounts.map((a) => ({ id: a.id, label: a.name, sub: money(a.balance, a.currency) }))]} onPick={setAccountId} />;
+  if (pick === 'category') return <ListPicker title="Стаття" value={categoryId} onClose={() => setPick(null)}
+    items={[{ id: '', label: 'Усі статті' }, ...ordered.map((c) => ({ id: c.id, label: (c.parentId ? '   ↳ ' : '') + c.name, folder: !c.parentId && cats.some((x) => x.parentId === c.id) }))]} onPick={setCategoryId} />;
+  return (
+    <div className="m-hist">
+      <div className="m-picker-top">
+        <button onClick={onClose} aria-label="Назад">‹</button><b>Історія</b>
+        <button onClick={() => { setSearch(!search); if (search) setQ(''); }} aria-label="Пошук" style={{ fontSize: 20 }}>🔍</button>
+      </div>
+      {search && <input className="input" autoFocus type="search" placeholder="Пошук: отримувач, коментар" value={q} onChange={(e) => setQ(e.target.value)} style={{ marginBottom: 8 }} />}
+      <button className="m-accrow" onClick={() => setPick('period')}><span>{periodName(period)}</span><span>›</span></button>
+      <div className="m-histfilters">
+        <button className="m-accrow" onClick={() => setPick('account')}><span className="ellipsis">{acc?.name ?? 'Усі рахунки'}</span><span className="num c-balance">{acc ? money(acc.balance, acc.currency) : ''} ›</span></button>
+        <button className="m-accrow" onClick={() => setPick('category')}><span className="ellipsis">{cat?.name ?? 'Усі статті'}</span><span>›</span></button>
+      </div>
+      <div className="m-day">{type === 'expense' ? 'Витрачено' : 'Отримано'} за період: <b className="num">{total}</b>{loading && ' · оновлюю…'}</div>
+      <div className="m-histbody">
+        {items === null && loading ? <div className="empty">Завантаження…</div> : (
+          <TxList items={shown}
+            onDelete={async (i) => { enqueue({ id: SY.uid(), kind: 'delete', txId: i.id, at: new Date().toISOString(), tries: 0, item: i }); }} />
+        )}
+      </div>
+    </div>
+  );
+}
 
 function TFeed() {
   const { t } = useT();
