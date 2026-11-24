@@ -230,3 +230,6 @@ code.url { display: block; word-break: break-all; background: var(--surface-2); 
 .acc-list .item .ic { display: none; }
 .m-cat .ic.folder { background: rgba(255, 214, 10, .12); }
 .m-cat .sub { font-size: 10px; color: var(--text-3); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-cat { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.m-cat:disabled { opacity: .5; }
+.m-hint { grid-column: 1 / -1; text-align: center; font-size: 11px; color: var(--text-3); padding: 6px 0 2px; }

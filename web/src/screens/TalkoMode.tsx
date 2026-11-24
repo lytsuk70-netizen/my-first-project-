@@ -203,13 +203,14 @@ const PAGE = 4;
 
 function TEntry({ type }: { type: 'income' | 'expense' }) {
   const { t } = useT();
-  const { accounts, categories, version } = useTalko();
+  const { accounts, categories, version, changed, toast } = useTalko();
   const [expr, setExpr] = useState('');
   const [accountId, setAccountId] = useState(() => { try { return localStorage.getItem('gok.talko.acc.' + type) ?? ''; } catch { return ''; } });
   const [page, setPage] = useState(0);
   const [open, setOpen] = useState<string | null>(null);
   const [all, setAll] = useState(false);
   const [folder, setFolder] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [voice, setVoice] = useState(false);
   useEffect(() => { if (accounts.length && !accounts.some((a) => a.id === accountId)) setAccountId(accounts[0].id); }, [accounts, accountId]);
   const today = useAsyncT(() => get('/talko/transactions' + qs({ from: todayISO(), to: todayISO(), type })), [version, type]);
@@ -235,8 +236,32 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   const totalTxt = Object.entries(todayTotal).map(([c, v]) => money((v as number).toFixed(2), c)).join(' + ') || money('0', 'UAH');
   const pick = (id: string) => {
     if (id !== folder && folders.has(id) && categories.some((c) => c.parentId === id)) { setAll(false); setFolder(id); return; }
-    if (!hasAmount) return; setAll(false); setOpen(id);
+    if (!hasAmount || busy) return; setAll(false);
+    if (longPressed.current) { longPressed.current = false; setOpen(id); return; }
+    void quickSave(id);
   };
+  /** One tap on a category records the expense right away (the tap is the confirmation), like «Деньги ОК». */
+  async function quickSave(categoryId: string) {
+    const acc = accounts.find((a) => a.id === accountId);
+    if (!acc) return;
+    setBusy(true);
+    try {
+      const body = { type, amount: amount.replace(',', '.'), accountId, categoryId, projectId: null, description: '', date: todayISO() };
+      let r = await post('/talko/transactions', body);
+      if (r.status === 'needs_confirmation') r = await post('/talko/transactions', { ...body, confirmationToken: r.confirmationToken });
+      const cat = categories.find((c) => c.id === categoryId)?.name ?? '';
+      setExpr(''); setFolder(null);
+      await changed();
+      toast(`Записано: ${money(amount.replace(',', '.'), acc.currency)} · ${cat} · ${acc.name}`);
+    } catch (e: any) {
+      toast('Не записано: ' + (e?.message ?? 'помилка'));
+    } finally { setBusy(false); }
+  }
+  // long press on a category opens the full form (comment, date, project)
+  const longPressed = useRef(false);
+  const pressTimer = useRef<number | null>(null);
+  const holdStart = () => { longPressed.current = false; pressTimer.current = window.setTimeout(() => { longPressed.current = true; }, 550); };
+  const holdEnd = () => { if (pressTimer.current) window.clearTimeout(pressTimer.current); };
   return (
     <div className={'m-entry ' + (exp ? 'exp' : 'inc')}>
       <div className="m-head">
@@ -267,12 +292,13 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
               ? <button className="m-cat" onClick={() => setFolder(null)}><span className="ic all">‹</span><span className="lbl">Назад</span></button>
               : <button className="m-cat" onClick={() => setAll(true)}><span className="ic all">☰</span><span className="lbl">Всі статті</span></button>}
             {cats.map((c) => (
-              <button key={c.id} className="m-cat" onClick={() => pick(c.id)}>
+              <button key={c.id} className="m-cat" disabled={busy} onClick={() => pick(c.id)} onPointerDown={holdStart} onPointerUp={holdEnd} onPointerLeave={holdEnd} onContextMenu={(e) => e.preventDefault()}>
                 <span className={'ic' + (folders.has(c.id) && c.id !== folder ? ' folder' : '')}>{folders.has(c.id) && c.id !== folder ? '📁' : catIcon(c.name)}</span>
                 <span className="lbl">{c.name.replace(/^Витрати\s+/i, '')}</span>
                 {folderName && <span className="sub">{c.id === folder ? 'уся папка' : folderName}</span>}
               </button>
             ))}
+            <div className="m-hint">{busy ? 'Записую в TALKO…' : 'Натисніть статтю — витрата запишеться. Утримайте — додати коментар чи дату.'}</div>
           </div>
         ) : (
           <TxList items={today.data?.items ?? []} compact />
