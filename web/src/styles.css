@@ -276,3 +276,8 @@ label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width:
 .m-left-acts button { width: 78px; height: 52px; border: 0; border-radius: 14px; color: #fff; font-size: 15px; line-height: 1.1; }
 .m-yest { background: #5b8def; }
 .m-dt { background: #5a5a5e; }
+.m-sync { font-size: 20px; color: var(--accent); display: flex; align-items: center; justify-content: center; gap: 1px; border: 0; background: none; }
+.m-sync small { font-size: 11px; }
+.m-sync.ok { color: #30d158; font-size: 16px; opacity: .7; }
+.m-sync.err { color: #ff9f0a; }
+.m-pend { color: var(--accent); }

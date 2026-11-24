@@ -75,11 +75,11 @@ export async function talko(userId: string, tool: string, args: Json = {}): Prom
       conns.delete(userId);
       if (attempt === 1) {
         await setStatus(userId, 'talko', 'error', String(e.message ?? e)).catch(() => {});
-        throw new IntegrationError(`Немає зв'язку з TALKO: ${e.message ?? e}`);
+        throw new IntegrationError(`Немає зв'язку з TALKO: ${e.message ?? e}`, 503);
       }
     }
   }
-  throw new IntegrationError('TALKO недоступний');
+  throw new IntegrationError('TALKO недоступний', 503);
 }
 
 // ---------- configuration ----------

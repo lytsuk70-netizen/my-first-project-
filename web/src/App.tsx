@@ -46,10 +46,16 @@ function Shell() {
 }
 
 export function App() {
-  const [state, setState] = useState<{ loading: boolean; user: unknown; needsSetup: boolean; settings: Settings | null; error?: string }>({ loading: true, user: null, needsSetup: false, settings: null });
+  // start at once with the last known login (offline-first); the server check runs in the background
+  const [state, setState] = useState<{ loading: boolean; user: unknown; needsSetup: boolean; settings: Settings | null; error?: string }>(() => {
+    try { const c = JSON.parse(localStorage.getItem('gok.me') ?? 'null'); if (c?.user && c?.settings) return { loading: false, user: c.user, needsSetup: false, settings: c.settings }; } catch { /* ignore */ }
+    return { loading: true, user: null, needsSetup: false, settings: null };
+  });
   const load = useCallback(() => {
-    get('/auth/me').then((me) => setState({ loading: false, user: me.user, needsSetup: me.needsSetup, settings: me.settings }))
-      .catch((e) => setState({ loading: false, user: null, needsSetup: false, settings: null, error: e.message }));
+    get('/auth/me').then((me) => {
+      try { if (me.user && me.settings) localStorage.setItem('gok.me', JSON.stringify({ user: me.user, settings: me.settings })); else localStorage.removeItem('gok.me'); } catch { /* ignore */ }
+      setState({ loading: false, user: me.user, needsSetup: me.needsSetup, settings: me.settings });
+    }).catch((e) => setState((s) => s.user && s.settings ? s : { loading: false, user: null, needsSetup: false, settings: null, error: e.message }));
   }, []);
   useEffect(load, [load]);
   if (state.loading) return <div className="empty">…</div>;

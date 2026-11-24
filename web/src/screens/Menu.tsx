@@ -48,7 +48,7 @@ export function Menu() {
 
 function LogoutButton() {
   const { t } = useT();
-  return <button className="btn danger block" style={{ marginTop: 16 }} onClick={async () => { await post('/auth/logout'); location.reload(); }}>{t.logout}</button>;
+  return <button className="btn danger block" style={{ marginTop: 16 }} onClick={async () => { await post('/auth/logout'); try { localStorage.removeItem('gok.me'); } catch { /* ignore */ } location.reload(); }}>{t.logout}</button>;
 }
 
 // ---------- categories ----------

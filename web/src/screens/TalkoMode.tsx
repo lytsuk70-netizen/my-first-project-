@@ -9,6 +9,8 @@ import { Bars, Donut } from '../components/Charts';
 import { ErrorBox, Field, Icons, Sheet, fmtDay } from '../components/ui';
 import { useT } from '../i18n';
 import { money, normalizeAmountInput, todayISO } from '../money';
+import * as SY from '../talkoSync';
+import type { Op } from '../talkoSync';
 
 interface TAccount { id: string; name: string; type: string; currency: string; balance: string }
 interface TCategory { id: string; name: string; type: 'income' | 'expense'; parentId: string | null }
@@ -18,7 +20,8 @@ type Tab = 'expense' | 'income' | 'accounts' | 'feed' | 'menu';
 interface Ctx {
   accounts: TAccount[]; totals: Record<string, string>; totalBase: string | null; baseCurrency: string;
   categories: TCategory[]; projects: Array<{ id: string; name: string }>;
-  version: number; changed: () => Promise<void>; changedAll: () => Promise<void>; adjust: (accountId: string, delta: number) => void; error: string | null;
+  version: number; changed: () => Promise<void>; changedAll: () => Promise<void>; error: string | null;
+  outbox: Op[]; syncErr: string | null; enqueue: (op: Op) => void;
   toast: (m: string, err?: boolean) => void;
 }
 const TC = createContext<Ctx>(null as unknown as Ctx);
@@ -26,33 +29,75 @@ const useTalko = () => useContext(TC);
 
 const PALETTE = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#0ca30c', '#9085e9', '#e66767'];
 
+/** Balance change a queued (not yet synced) operation makes. */
+function opDeltas(op: Op): Array<[string, number]> {
+  if (op.kind === 'add') return [[op.item.accountId, (op.item.type === 'expense' ? -1 : 1) * Number(op.item.amount)]];
+  if (op.kind === 'delete') return [[op.item.accountId, (op.item.type === 'expense' ? 1 : -1) * Number(op.item.amount)]];
+  if (op.kind === 'transfer') return [[op.body.fromAccountId, -Number(op.body.amount)], [op.body.toAccountId, Number(op.body.amountTo ?? op.body.amount)]];
+  return [];
+}
+function applyDeltas(accounts: TAccount[], deltas: Array<[string, number]>) {
+  if (!deltas.length) return accounts;
+  const m = new Map<string, number>();
+  for (const [id, d] of deltas) m.set(id, (m.get(id) ?? 0) + d);
+  return accounts.map((a) => m.has(a.id) ? { ...a, balance: (Math.round((Number(a.balance) + m.get(a.id)!) * 100) / 100).toFixed(2) } : a);
+}
+type BaseData = Omit<Ctx, 'version' | 'changed' | 'changedAll' | 'toast' | 'error' | 'outbox' | 'syncErr' | 'enqueue'>;
+const EMPTY: BaseData = { accounts: [], totals: {}, totalBase: null, baseCurrency: 'UAH', categories: [], projects: [] };
+const readCache = <T,>(k: string, d: T): T => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
+const writeCache = (k: string, v: unknown) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* full */ } };
+
 export function TalkoShell() {
   const { t } = useT();
   const [tab, setTab] = useState<Tab>('expense');
-  const [data, setData] = useState<Omit<Ctx, 'version' | 'changed' | 'changedAll' | 'adjust' | 'toast' | 'error'>>({ accounts: [], totals: {}, totalBase: null, baseCurrency: 'UAH', categories: [], projects: [] });
+  // the last known TALKO data is shown at once from the phone's memory, then refreshed in the background
+  const [data, setDataRaw] = useState<BaseData>(() => readCache('gok.base', EMPTY));
+  const setData = useCallback((f: (d: BaseData) => BaseData) => setDataRaw((d) => { const n = f(d); writeCache('gok.base', n); return n; }), []);
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [outbox, setOutbox] = useState<Op[]>(SY.ops());
+  const [syncErr, setSyncErr] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<{ m: string; err?: boolean } | null>(null);
   const timer = useRef<number>();
+  const refreshTimer = useRef<number>();
+  const toast = useCallback((m: string, err?: boolean) => { setToastMsg({ m, err }); window.clearTimeout(timer.current); timer.current = window.setTimeout(() => setToastMsg(null), err ? 5000 : 2200); }, []);
   const load = useCallback(async () => {
     try {
       const [a, c, p] = await Promise.all([get('/talko/accounts'), get('/talko/categories'), get('/talko/projects')]);
-      setData({ accounts: a.accounts, totals: a.totalsByCurrency, totalBase: a.totalBase, baseCurrency: a.baseCurrency, categories: c, projects: p });
+      // while changes wait in the queue TALKO's balances are behind; keep ours and refresh after the queue is sent
+      if (SY.ops().length) setData((d) => ({ ...d, categories: c, projects: p }));
+      else setData(() => ({ accounts: a.accounts, totals: a.totalsByCurrency, totalBase: a.totalBase, baseCurrency: a.baseCurrency, categories: c, projects: p }));
       setError(null);
-    } catch (e: any) { setError(e.message); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
+    } catch (e: any) { if (!readCache<BaseData>('gok.base', EMPTY).accounts.length) setError(e.message); }
+  }, [setData]);
   const loadAccounts = useCallback(async () => {
-    try { const a = await get('/talko/accounts'); setData((d) => ({ ...d, accounts: a.accounts, totals: a.totalsByCurrency, totalBase: a.totalBase, baseCurrency: a.baseCurrency })); setError(null); }
-    catch (e: any) { setError(e.message); }
-  }, []);
+    try {
+      const a = await get('/talko/accounts');
+      if (SY.ops().length) return;
+      setData((d) => ({ ...d, accounts: a.accounts, totals: a.totalsByCurrency, totalBase: a.totalBase, baseCurrency: a.baseCurrency })); setError(null);
+    } catch { /* keep the cached balances */ }
+  }, [setData]);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => SY.subscribe((e) => {
+    setOutbox([...SY.ops()]); setSyncErr(SY.syncError());
+    if (e.type === 'done') {
+      // the change is in TALKO now: keep it in the shown balances until the next refresh brings TALKO's numbers
+      setData((d) => ({ ...d, accounts: applyDeltas(d.accounts, opDeltas(e.op)) }));
+    }
+    if (e.type === 'failed') toast('TALKO не прийняв зміну: ' + e.message, true);
+    if (e.type !== 'change' && !SY.ops().length) {
+      window.clearTimeout(refreshTimer.current);
+      refreshTimer.current = window.setTimeout(() => { setVersion((v) => v + 1); loadAccounts(); }, 1500);
+    }
+  }), [setData, loadAccounts, toast]);
+  const pendingDeltas = outbox.flatMap(opDeltas);
   const ctx: Ctx = {
-    ...data, version, error,
+    ...data, accounts: applyDeltas(data.accounts, pendingDeltas), version, error, outbox, syncErr,
+    enqueue: (op) => SY.enqueue(op),
     // after a write only balances and lists change; categories/projects are reloaded only when they were edited
     changed: async () => { setVersion((v) => v + 1); await loadAccounts(); },
     changedAll: async () => { await load(); setVersion((v) => v + 1); },
-    adjust: (accountId, delta) => setData((d) => ({ ...d, accounts: d.accounts.map((a) => a.id === accountId ? { ...a, balance: (Math.round((Number(a.balance) + delta) * 100) / 100).toFixed(2) } : a) })),
-    toast: (m, err) => { setToastMsg({ m, err }); window.clearTimeout(timer.current); timer.current = window.setTimeout(() => setToastMsg(null), err ? 5000 : 2200); },
+    toast,
   };
   const nav: Array<[Tab, string, JSX.Element, string]> = [
     ['expense', t.expenses, Icons.minus, 'expense'], ['income', t.income, Icons.plus, 'income'], ['accounts', t.accounts, Icons.wallet, ''],
@@ -92,7 +137,7 @@ function useAsyncT<T>(fn: () => Promise<T>, deps: unknown[]) {
 
 function TxSheet({ type, amount, accountId, categoryId, comment, onClose, title }: { type: 'income' | 'expense'; amount: string; accountId: string; categoryId: string; comment?: string; title?: string; onClose: () => void }) {
   const { t } = useT();
-  const { accounts, categories, projects, changed, toast } = useTalko();
+  const { accounts, categories, projects, toast, enqueue } = useTalko();
   const [f, setF] = useState({ type, amount, accountId, categoryId, projectId: '', description: comment ?? '', counterparty: '', date: todayISO() });
   const [pending, setPending] = useState<{ token: string; preview: unknown } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -100,14 +145,19 @@ function TxSheet({ type, amount, accountId, categoryId, comment, onClose, title 
   const cats = categories.filter((c) => c.type === f.type);
   const ordered = cats.filter((c) => !c.parentId || !cats.some((p) => p.id === c.parentId)).flatMap((p) => [p, ...cats.filter((c) => c.parentId === p.id)]);
   const valid = /^\d+([.,]\d{1,2})?$/.test(f.amount.trim()) && Number(normalizeAmountInput(f.amount)) > 0 && f.accountId && f.categoryId;
-  async function submit(token?: string) {
-    setBusy(true); setError(null);
-    try {
-      const r = await post('/talko/transactions', { ...f, amount: normalizeAmountInput(f.amount), projectId: f.projectId || null, confirmationToken: token });
-      if (r.status === 'needs_confirmation') { setPending({ token: r.confirmationToken, preview: r.preview }); return; }
-      await changed(); toast(t.saved + ' у TALKO'); onClose();
-    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  // saved in the app at once; sent to TALKO by the background queue
+  async function submit(_token?: string) {
+    const a = accounts.find((x) => x.id === f.accountId);
+    if (!a) return;
+    const n = normalizeAmountInput(f.amount);
+    const now = new Date();
+    const tmpId = 'tmp-' + SY.uid();
+    enqueue({ id: SY.uid(), kind: 'add', tmpId, at: now.toISOString(), tries: 0,
+      body: { type: f.type, amount: n, accountId: f.accountId, categoryId: f.categoryId, projectId: f.projectId || null, description: f.description, date: f.date },
+      item: { id: tmpId, type: f.type, amount: n, currency: a.currency, accountId: f.accountId, categoryName: categories.find((c) => c.id === f.categoryId)?.name ?? '', comment: f.description, counterparty: '', occurredAt: now.toISOString(), localDate: f.date, time: f.date === todayISO() ? now.toTimeString().slice(0, 5) : null } });
+    toast(t.saved); onClose();
   }
+  void setPending; void setBusy; void setError;
   const acc = accounts.find((a) => a.id === f.accountId);
   return (
     <Sheet title={title ?? (f.type === 'expense' ? t.expense : t.incomeOne)} onClose={onClose}>
@@ -211,12 +261,8 @@ const PAGE = 4;
 
 function TEntry({ type }: { type: 'income' | 'expense' }) {
   const { t } = useT();
-  const { accounts, categories, version, changed, toast, adjust } = useTalko();
+  const { accounts, categories, version, toast, outbox, syncErr, enqueue } = useTalko();
   const [expr, setExpr] = useState('');
-  // optimistic UI: new entries show at once, deleted ones vanish at once; TALKO is updated in the background
-  const [pendingTx, setPendingTx] = useState<TTx[]>([]);
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
-  const [overrides, setOverrides] = useState<Record<string, Partial<TTx>>>({});
   const [accountId, setAccountId] = useState(() => { try { return localStorage.getItem('gok.talko.acc.' + type) ?? ''; } catch { return ''; } });
   const [page, setPage] = useState(0);
   const [open, setOpen] = useState<string | null>(null);
@@ -227,9 +273,39 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   const [sel, setSel] = useState<string | null>(null);
   const [edit, setEdit] = useState<{ id: string; kind: 'comment' | 'date'; value: string } | null>(null);
   useEffect(() => { if (accounts.length && !accounts.some((a) => a.id === accountId)) setAccountId(accounts[0].id); }, [accounts, accountId]);
-  const today = useAsyncT(() => get('/talko/transactions' + qs({ from: todayISO(), to: todayISO(), type })), [version, type]);
-  const loaded: TTx[] = today.data?.items ?? [];
-  const items: TTx[] = [...pendingTx.filter((p) => !loaded.some((x) => x.id === p.id)), ...loaded].filter((x) => !hidden.has(x.id)).map((x) => overrides[x.id] ? { ...x, ...overrides[x.id] } : x).filter((x) => x.localDate === todayISO() || !overrides[x.id]?.localDate);
+  // today's list: shown at once from the phone's memory, refreshed from TALKO in the background,
+  // with queued (not yet synced) changes laid on top
+  const cacheKey = 'gok.today.' + type;
+  const [base, setBaseRaw] = useState<TTx[]>(() => { const c = readCache<{ d: string; items: TTx[] }>(cacheKey, { d: '', items: [] }); return c.d === todayISO() ? c.items : []; });
+  const setBase = useCallback((f: (b: TTx[]) => TTx[]) => setBaseRaw((b) => { const n = f(b); writeCache(cacheKey, { d: todayISO(), items: n }); return n; }), [cacheKey]);
+  useEffect(() => {
+    let alive = true;
+    get('/talko/transactions' + qs({ from: todayISO(), to: todayISO(), type }))
+      .then((r) => { if (alive && !SY.ops().length) setBase(() => r.items ?? []); })
+      .catch(() => { /* offline: keep what we have */ });
+    return () => { alive = false; };
+  }, [version, type, setBase]);
+  useEffect(() => SY.subscribe((e) => {
+    if (e.type !== 'done') return;
+    const op = e.op;
+    if (op.kind === 'add' && op.item.type === type && op.item.localDate === todayISO()) {
+      const id = e.realId ?? op.tmpId;
+      setBase((b) => [{ ...op.item, id }, ...b.filter((x) => x.id !== id)]);
+      setSel((s) => s === op.tmpId ? id : s);
+    }
+    if (op.kind === 'delete') setBase((b) => b.filter((x) => x.id !== op.txId));
+    if (op.kind === 'edit') setBase((b) => b.map((x) => x.id !== op.txId ? x : { ...x, ...(op.body.description !== undefined ? { comment: op.body.description } : {}), ...(op.body.date ? { localDate: op.body.date } : {}) }).filter((x) => x.localDate === todayISO()));
+  }), [type, setBase]);
+  const deleting = new Set<string>(outbox.flatMap((o) => o.kind === 'delete' ? [o.txId] : []));
+  const editsOf = (id: string) => outbox.filter((o): o is Extract<Op, { kind: 'edit' }> => o.kind === 'edit' && o.txId === id);
+  const pendingIds = new Set<string>(outbox.flatMap((o) => o.kind === 'add' ? [o.tmpId] : 'txId' in o ? [o.txId] : []));
+  const items: TTx[] = [
+    ...outbox.flatMap((o) => o.kind === 'add' && o.item.type === type ? [{ ...o.item, id: o.tmpId }] : []),
+    ...base,
+  ].filter((x) => !deleting.has(x.id))
+    .map((x) => editsOf(x.id).reduce((a, o) => ({ ...a, ...(o.body.description !== undefined ? { comment: o.body.description } : {}), ...(o.body.date ? { localDate: o.body.date } : {}) }), x))
+    .filter((x) => x.localDate === todayISO())
+    .sort((a, b) => String(b.time ?? '').localeCompare(String(a.time ?? '')));
   const exp = type === 'expense';
   const amount = /[+\-×÷]/.test(expr) ? (evalExpr(expr) ?? '') : expr;
   const hasAmount = /[1-9]/.test(amount);
@@ -260,61 +336,25 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   function quickSave(categoryId: string) {
     const acc = accounts.find((a) => a.id === accountId);
     if (!acc) return;
-    const n = amount.replace(',', '.');
+    const n = normalizeAmountInput(amount);
     const cat = categories.find((c) => c.id === categoryId)?.name ?? '';
-    const tmp: TTx = { id: 'tmp-' + Date.now(), type, amount: n, currency: acc.currency, accountId, categoryName: cat, comment: '', counterparty: '', occurredAt: new Date().toISOString(), localDate: todayISO(), time: new Date().toTimeString().slice(0, 5) };
-    const delta = (exp ? -1 : 1) * Number(n);
-    setPendingTx((p) => [tmp, ...p]); setSel(tmp.id); adjust(accountId, delta);
-    setExpr(''); setFolder(null);
-    void (async () => {
-      try {
-        const r = await post('/talko/transactions', { type, amount: n, accountId, categoryId, projectId: null, description: '', date: todayISO(), autoConfirm: true });
-        if (r.status !== 'saved') throw new Error('TALKO не підтвердив');
-        const real = r.id ? { ...tmp, id: String(r.id) } : tmp;
-        setPendingTx((p) => p.map((x) => x.id === tmp.id ? real : x));
-        setSel((s) => s === tmp.id ? real.id : s);
-        if (!r.id) newId.current = 'latest';
-        await changed();
-        setPendingTx((p) => p.filter((x) => x.id !== real.id && x.id !== tmp.id));
-      } catch (e: any) {
-        setPendingTx((p) => p.filter((x) => x.id !== tmp.id)); adjust(accountId, -delta);
-        toast(`Не записано ${money(n, acc.currency)} · ${cat}: ` + (e?.message ?? 'помилка'), true);
-      }
-    })();
+    const now = new Date();
+    const tmpId = 'tmp-' + SY.uid();
+    const item: TTx = { id: tmpId, type, amount: n, currency: acc.currency, accountId, categoryName: cat, comment: '', counterparty: '', occurredAt: now.toISOString(), localDate: todayISO(), time: now.toTimeString().slice(0, 5) };
+    enqueue({ id: SY.uid(), kind: 'add', tmpId, at: now.toISOString(), tries: 0, body: { type, amount: n, accountId, categoryId, projectId: null, description: '', date: todayISO() }, item });
+    setSel(tmpId); setExpr(''); setFolder(null);
   }
-  // after a quick save the new entry is highlighted with ✎ / 📅 actions, like «Деньги ОК»
-  const newId = useRef<string | null>(null);
-  useEffect(() => {
-    const list: TTx[] = today.data?.items ?? [];
-    if (!newId.current || !list.length) return;
-    const found = newId.current !== 'latest' ? list.find((x) => x.id === newId.current) : null;
-    setSel((found ?? [...list].sort((a, b) => String(b.time ?? '').localeCompare(String(a.time ?? '')))[0]).id);
-    newId.current = null;
-  }, [today.data]);
   function moveDate(i: TTx, date: string) {
     if (sel === i.id) setSel(null);
-    setOverrides((o) => ({ ...o, [i.id]: { localDate: date } }));
+    enqueue({ id: SY.uid(), kind: 'edit', txId: i.id, at: new Date().toISOString(), tries: 0, body: { date } });
     toast(`Перенесено на ${date.split('-').reverse().slice(0, 2).join('.')}: ${i.categoryName ?? ''} ${money(i.amount, i.currency)}`);
-    void (async () => {
-      try { await api('PATCH', '/talko/transactions/' + encodeURIComponent(i.id), { date }); await changed(); setOverrides((o) => { const n = { ...o }; delete n[i.id]; return n; }); }
-      catch (err: any) { setOverrides((o) => { const n = { ...o }; delete n[i.id]; return n; }); toast('Дату не змінено: ' + (err?.message ?? 'помилка'), true); }
-    })();
   }
   function saveEdit() {
     if (!edit) return;
     const e0 = edit;
     setEdit(null);
-    setOverrides((o) => ({ ...o, [e0.id]: e0.kind === 'comment' ? { comment: e0.value } : { localDate: e0.value } }));
-    void (async () => {
-      try {
-        await api('PATCH', '/talko/transactions/' + encodeURIComponent(e0.id), e0.kind === 'comment' ? { description: e0.value } : { date: e0.value });
-        await changed();
-        setOverrides((o) => { const n = { ...o }; delete n[e0.id]; return n; });
-      } catch (err: any) {
-        setOverrides((o) => { const n = { ...o }; delete n[e0.id]; return n; });
-        toast('Не збережено: ' + (err?.message ?? 'помилка'), true);
-      }
-    })();
+    if (e0.kind === 'date') { const it = items.find((x) => x.id === e0.id); if (it && e0.value !== todayISO()) { moveDate(it, e0.value); return; } }
+    enqueue({ id: SY.uid(), kind: 'edit', txId: e0.id, at: new Date().toISOString(), tries: 0, body: e0.kind === 'comment' ? { description: e0.value } : { date: e0.value } });
   }
   // long press on a category opens the full form (comment, date, project)
   const longPressed = useRef(false);
@@ -326,7 +366,9 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
       <div className="m-head">
         <button className="m-hbtn" onClick={() => setVoice(true)} aria-label={t.voice}>{Icons.mic}</button>
         <div className="m-title">{exp ? t.expenses : t.income}</div>
-        <span className="m-hbtn" />
+        {outbox.length
+          ? <button className={'m-hbtn m-sync' + (syncErr ? ' err' : '')} onClick={() => { SY.kick(); if (syncErr) toast(syncErr, true); }} aria-label="Синхронізація з TALKO">⟳<small>{outbox.length}</small></button>
+          : <span className="m-hbtn m-sync ok" title="Усе в TALKO">✓</span>}
       </div>
       <div className={'m-amount' + (expr ? '' : ' ph')}>
         <span className="m-amount-txt num">{expr ? expr : t.enterAmount}</span>
@@ -360,29 +402,19 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
             <div className="m-hint">{busy ? 'Записую в TALKO…' : 'Натисніть статтю — витрата запишеться. Утримайте — додати коментар чи дату.'}</div>
           </div>
         ) : (
-          <TxList items={items} compact selected={sel} onSelect={(id) => setSel(sel === id ? null : id)}
+          <TxList items={items} compact selected={sel} pending={pendingIds} onSelect={(id) => setSel(sel === id ? null : id)}
             onYesterday={(i) => {
-              if (i.id.startsWith('tmp-')) { toast('Зачекайте секунду — витрата ще записується'); return; }
               const d = new Date(); d.setDate(d.getDate() - 1);
-              const y = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-              moveDate(i, y);
+              moveDate(i, `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
             }}
-            onDate={(i) => { if (i.id.startsWith('tmp-')) { toast('Зачекайте секунду — витрата ще записується'); return; } setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() }); }}
+            onDate={(i) => setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() })}
             onDelete={async (i) => {
-              if (i.id.startsWith('tmp-')) { toast('Зачекайте секунду — витрата ще записується'); return; }
-              const delta = (i.type === 'expense' ? 1 : -1) * Number(i.amount);
-              setHidden((h) => new Set(h).add(i.id)); adjust(i.accountId, delta); if (sel === i.id) setSel(null);
-              void (async () => {
-                try { await api('DELETE', '/talko/transactions/' + encodeURIComponent(i.id)); await changed(); }
-                catch (e: any) {
-                  setHidden((h) => { const n = new Set(h); n.delete(i.id); return n; }); adjust(i.accountId, -delta);
-                  toast('Не видалено: ' + (e?.message ?? 'помилка'), true);
-                }
-              })();
+              if (sel === i.id) setSel(null);
+              enqueue({ id: SY.uid(), kind: 'delete', txId: i.id, at: new Date().toISOString(), tries: 0, item: i });
             }}
             actions={(i) => (<>
-              <button disabled={i.id.startsWith('tmp-')} onClick={() => setEdit({ id: i.id, kind: 'comment', value: i.comment === '—' ? '' : (i.comment ?? '') })} aria-label="Коментар">✎<span>Коментар</span></button>
-              <button disabled={i.id.startsWith('tmp-')} onClick={() => setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() })} aria-label="Дата">📅<span>Дата</span></button>
+              <button onClick={() => setEdit({ id: i.id, kind: 'comment', value: i.comment === '—' ? '' : (i.comment ?? '') })} aria-label="Коментар">✎<span>Коментар</span></button>
+              <button onClick={() => setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() })} aria-label="Дата">📅<span>Дата</span></button>
             </>)} />
         )}
       </div>
@@ -500,7 +532,7 @@ function cleanComment(c: string | null | undefined) {
   return x === '—' ? '' : x;
 }
 
-function TxList({ items, compact, selected, onSelect, actions, onDelete, onYesterday, onDate }: { items: TTx[]; compact?: boolean; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode; onDelete?: (i: TTx) => Promise<void>; onYesterday?: (i: TTx) => void; onDate?: (i: TTx) => void }) {
+function TxList({ items, compact, selected, onSelect, actions, onDelete, onYesterday, onDate, pending }: { items: TTx[]; compact?: boolean; pending?: Set<string>; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode; onDelete?: (i: TTx) => Promise<void>; onYesterday?: (i: TTx) => void; onDate?: (i: TTx) => void }) {
   const { t, lang } = useT();
   const { accounts } = useTalko();
   // swipe left on an entry reveals the red trash button, like «Деньги ОК»
@@ -540,7 +572,7 @@ function TxList({ items, compact, selected, onSelect, actions, onDelete, onYeste
                 )}
                 <span className="ic">{catIcon(i.categoryName ?? '')}</span>
                 <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{(() => { const c = cleanComment(i.comment); return c && i.categoryName ? <div className="t3">{c}</div> : null; })()}</div>
-                <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{i.time ?? ''}</small></div>
+                <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{pending?.has(i.id) && <span className="m-pend" title="Ще не в TALKO">⟳ </span>}{i.time ?? ''}</small></div>
                 {selected === i.id && actions && <div className="m-actions" onClick={(e) => e.stopPropagation()}>{actions(i)}</div>}
                 {swiped === i.id && onDelete && (
                   <button className="m-trash" aria-label="Видалити" disabled={deleting === i.id}
@@ -613,14 +645,17 @@ function AccountPicker({ title, value, onPick, onClose }: { title: string; value
 
 function TTransferList({ days }: { days?: number }) {
   const { t, lang } = useT();
-  const { accounts, version } = useTalko();
-  const list = useAsyncT<TTr[]>(() => get('/talko/transfers'), [version]);
+  const { accounts, version, outbox } = useTalko();
+  const [cached, setCached] = useState<TTr[]>(() => readCache('gok.transfers', [] as TTr[]));
+  const list = useAsyncT<TTr[]>(() => get('/talko/transfers').then((r: TTr[]) => { writeCache('gok.transfers', r); setCached(r); return r; }), [version]);
   const name = (id: string) => accounts.find((a) => a.id === id)?.name ?? '—';
   const cur = (id: string) => accounts.find((a) => a.id === id)?.currency ?? 'UAH';
-  const items = (list.data ?? []).slice(0, days ? 200 : 30);
+  // queued transfers (not in TALKO yet) on top, marked ⟳
+  const queued: TTr[] = outbox.flatMap((o, k) => o.kind === 'transfer' ? [{ id: -1 - k, fromAccountId: o.body.fromAccountId, toAccountId: o.body.toAccountId, amount: o.body.amount, amountTo: o.body.amountTo ?? null, description: '⟳ ' + (o.body.description ?? 'ще не в TALKO'), date: o.body.date ?? todayISO() }] : []);
+  const items = [...queued, ...(list.data ?? cached)].slice(0, days ? 200 : 30);
   const groups: Array<[string, TTr[]]> = [];
   for (const x of items) { const g = groups.find((q) => q[0] === x.date); if (g) g[1].push(x); else groups.push([x.date, [x]]); }
-  if (list.loading && !list.data) return <div className="faint" style={{ padding: 12 }}>Завантаження…</div>;
+  if (list.loading && !list.data && !cached.length && !queued.length) return <div className="faint" style={{ padding: 12 }}>Завантаження…</div>;
   if (!items.length) return <div className="faint" style={{ padding: 12 }}>Переказів, зроблених у застосунку, ще немає.</div>;
   return (
     <div className="m-trlist">
@@ -643,7 +678,7 @@ function TTransferList({ days }: { days?: number }) {
 }
 
 function TTransferScreen() {
-  const { accounts, changed, toast } = useTalko();
+  const { accounts, toast, enqueue } = useTalko();
   const [fromId, setFromId] = useState(() => localStorage.getItem('gok.tr.from') ?? '');
   const [toId, setToId] = useState(() => localStorage.getItem('gok.tr.to') ?? '');
   const [pick, setPick] = useState<'from' | 'to' | null>(null);
@@ -651,7 +686,7 @@ function TTransferScreen() {
   const [comment, setComment] = useState('');
   const [amount, setAmount] = useState('');
   const [amountTo, setAmountTo] = useState('');
-  const [busy, setBusy] = useState(false);
+  const busy = false;
   const from = accounts.find((a) => a.id === fromId); const to = accounts.find((a) => a.id === toId);
   const fx = !!(from && to && from.currency !== to.currency);
   const n = (v: string) => Number(normalizeAmountInput(v));
@@ -660,18 +695,13 @@ function TTransferScreen() {
     if (k === 'from') { setFromId(id); try { localStorage.setItem('gok.tr.from', id); } catch { /* */ } }
     else { setToId(id); try { localStorage.setItem('gok.tr.to', id); } catch { /* */ } }
   };
-  async function submit() {
-    if (!valid || busy) return;
-    setBusy(true);
-    try {
-      const body: any = { fromAccountId: fromId, toAccountId: toId, amount: normalizeAmountInput(amount), amountTo: fx ? normalizeAmountInput(amountTo) : undefined, description: comment.trim() || undefined, date: date !== todayISO() ? date : undefined };
-      let r = await post('/talko/transfers', { ...body, autoConfirm: true });
-      for (let i = 0; i < 2 && r.status === 'needs_confirmation'; i++) r = await post('/talko/transfers', { ...body, confirmationToken: r.confirmationToken });
-      if (r.status !== 'saved') throw new Error('TALKO не підтвердив переказ');
-      setAmount(''); setAmountTo(''); setComment(''); setDate(todayISO());
-      await changed();
-      toast(`Переказ: ${from!.name} → ${to!.name} · ${money(normalizeAmountInput(amount), from!.currency)}`);
-    } catch (e: any) { toast('Не записано: ' + (e?.message ?? 'помилка'), true); } finally { setBusy(false); }
+  function submit() {
+    if (!valid) return;
+    const n = normalizeAmountInput(amount);
+    enqueue({ id: SY.uid(), kind: 'transfer', at: new Date().toISOString(), tries: 0, fromCurrency: from!.currency, toCurrency: to!.currency,
+      body: { fromAccountId: fromId, toAccountId: toId, amount: n, amountTo: fx ? normalizeAmountInput(amountTo) : undefined, description: comment.trim() || undefined, date: date !== todayISO() ? date : undefined } });
+    setAmount(''); setAmountTo(''); setComment(''); setDate(todayISO());
+    toast(`Переказ: ${from!.name} → ${to!.name} · ${money(n, from!.currency)}`);
   }
   if (pick) return <AccountPicker title={pick === 'from' ? 'Списати з рахунку' : 'Зарахувати на рахунок'} value={pick === 'from' ? fromId : toId} onPick={(id) => setAcc(pick, id)} onClose={() => setPick(null)} />;
   return (
@@ -926,7 +956,7 @@ function TMenu() {
             <button className="item" onClick={() => setScreen('reports')}><span className="ic">📊</span><div className="main"><div className="t1">{t.reports}</div></div>{Icons.chevR}</button>
             <button className="item" onClick={() => setScreen('talko')}><span className="ic">🔗</span><div className="main"><div className="t1">Підключення TALKO</div></div>{Icons.chevR}</button>
           </div>
-          <button className="btn danger block" style={{ marginTop: 16 }} onClick={async () => { await post('/auth/logout'); location.reload(); }}>{t.logout}</button>
+          <button className="btn danger block" style={{ marginTop: 16 }} onClick={async () => { await post('/auth/logout'); try { localStorage.removeItem('gok.me'); } catch { /* ignore */ } location.reload(); }}>{t.logout}</button>
         </>
       )}
       {screen === 'reports' && <TReports />}

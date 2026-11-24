@@ -26,6 +26,30 @@ type H = (req: Request, res: Response) => Promise<unknown>;
 const h = (fn: H) => (req: Request, res: Response, next: NextFunction) => { fn(req, res).catch(next); };
 const uid = (req: Request) => (req as any).user.id as string;
 
+/**
+ * The phone resends a queued change until it gets an answer; clientId makes that safe:
+ * a change that TALKO already took is answered from the stored result instead of being written twice.
+ */
+async function once(user: string, clientId: string | undefined, fn: () => Promise<any>) {
+  if (!clientId) return fn();
+  const ins = await pool.query('INSERT INTO talko_client_ops (user_id, client_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [user, clientId]);
+  if (!ins.rowCount) {
+    const { rows } = await pool.query('SELECT status, result, created_at FROM talko_client_ops WHERE user_id = $1 AND client_id = $2', [user, clientId]);
+    const row = rows[0];
+    if (row?.status === 'done') return row.result;
+    if (row && Date.now() - new Date(row.created_at).getTime() < 10 * 60_000) { const e: any = new IntegrationError('Ще записується в TALKO', 503); throw e; }
+    await pool.query('UPDATE talko_client_ops SET created_at = now() WHERE user_id = $1 AND client_id = $2', [user, clientId]);
+  }
+  try {
+    const r = await fn();
+    await pool.query("UPDATE talko_client_ops SET status = 'done', result = $3 WHERE user_id = $1 AND client_id = $2", [user, clientId, JSON.stringify(r ?? null)]);
+    return r;
+  } catch (e) {
+    await pool.query('DELETE FROM talko_client_ops WHERE user_id = $1 AND client_id = $2', [user, clientId]).catch(() => {});
+    throw e;
+  }
+}
+
 // ---------- validation schemas ----------
 const uuid = z.string().uuid();
 const amount = z.union([z.string(), z.number()]).transform(String);
@@ -332,13 +356,20 @@ export function createApp() {
   api.get('/talko/report', h(async (req, res) => { const q = z.object({ from: isoDate, to: isoDate }).parse(req.query); res.json(await TK.report(uid(req), q.from, q.to)); }));
   api.post('/talko/transactions', h(async (req, res) => {
     const b = z.object({ type: z.enum(['income', 'expense']), amount: amount, accountId: text(200).min(1), categoryId: text(200).min(1), projectId: text(200).nullable().optional(),
-      date: text(40).optional(), description: text(500).default(''), counterparty: text(200).optional(), confirmationToken: text(500).optional(), autoConfirm: z.boolean().optional() }).parse(req.body);
+      date: text(40).optional(), description: text(500).default(''), counterparty: text(200).optional(), confirmationToken: text(500).optional(), autoConfirm: z.boolean().optional(),
+      clientId: text(80).optional(), clientTime: text(40).optional() }).parse(req.body);
     const n = b.amount.replace(/\s/g, '').replace(',', '.');
     if (!/^\d+(\.\d{1,2})?$/.test(n) || Number(n) <= 0) return res.status(400).json({ error: 'invalid', message: 'Невірна сума' });
-    let r: any = await TK.addTransaction(uid(req), { ...b, amount: n }, b.confirmationToken);
-    // one-tap entry: the tap is the confirmation, so confirm on the server in the same request (one round trip from the phone)
-    if (b.autoConfirm && r.status === 'needs_confirmation') r = await TK.addTransaction(uid(req), { ...b, amount: n }, r.confirmationToken);
-    if (r.status === 'saved' && r.id) await pool.query('INSERT INTO talko_tx_time (user_id, talko_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [uid(req), String(r.id)]).catch((e) => console.error('tx time', e));
+    const r = await once(uid(req), b.clientId, async () => {
+      let x: any = await TK.addTransaction(uid(req), { ...b, amount: n }, b.confirmationToken);
+      // one-tap entry: the tap is the confirmation, so confirm on the server in the same request (one round trip from the phone)
+      if (b.autoConfirm && x.status === 'needs_confirmation') x = await TK.addTransaction(uid(req), { ...b, amount: n }, x.confirmationToken);
+      if (x.status === 'saved' && x.id) {
+        const at = b.clientTime && !Number.isNaN(Date.parse(b.clientTime)) ? b.clientTime : null;
+        await pool.query('INSERT INTO talko_tx_time (user_id, talko_id, at) VALUES ($1,$2,COALESCE($3::timestamptz, now())) ON CONFLICT DO NOTHING', [uid(req), String(x.id), at]).catch((e) => console.error('tx time', e));
+      }
+      return { status: x.status, id: x.id ?? null, confirmationToken: x.confirmationToken, preview: x.preview };
+    });
     res.json(r);
   }));
   // Voice in TALKO mode: the same interpreter, matched against TALKO's accounts and categories.
@@ -347,7 +378,11 @@ export function createApp() {
     res.json(await TK.editTransaction(uid(req), String(req.params.id), b));
   }));
   api.delete('/talko/transactions/:id', h(async (req, res) => {
-    res.json(await TK.deleteTransaction(uid(req), String(req.params.id)));
+    const clientId = typeof req.query.clientId === 'string' ? req.query.clientId.slice(0, 80) : undefined;
+    res.json(await once(uid(req), clientId, async () => {
+      try { return await TK.deleteTransaction(uid(req), String(req.params.id)); }
+      catch (e: any) { if (/не знайден|not found|видален|deleted/i.test(String(e.message))) return { status: 'deleted', already: true }; throw e; }
+    }));
   }));
   api.post('/talko/voice', h(async (req, res) => {
     const b = z.object({ text: text(500).min(1), defaultType: z.enum(['income', 'expense']).optional() }).parse(req.body);
@@ -369,8 +404,9 @@ export function createApp() {
     res.json({ command: cmd, answer });
   }));
   api.post('/talko/transfers', h(async (req, res) => {
-    const b = z.object({ fromAccountId: text(200).min(1), toAccountId: text(200).min(1), amount, amountTo: amount.optional(), description: text(500).optional(), date: isoDate.optional(), confirmationToken: text(500).optional(), autoConfirm: z.boolean().optional() }).parse(req.body);
+    const b = z.object({ fromAccountId: text(200).min(1), toAccountId: text(200).min(1), amount, amountTo: amount.optional(), description: text(500).optional(), date: isoDate.optional(), confirmationToken: text(500).optional(), autoConfirm: z.boolean().optional(), clientId: text(80).optional() }).parse(req.body);
     if (b.fromAccountId === b.toAccountId) return res.status(400).json({ error: 'invalid', message: 'Рахунки мають відрізнятися' });
+    const r = await once(uid(req), b.clientId, async () => {
     let r: any = await TK.transfer(uid(req), b, b.confirmationToken);
     // the ✓ on the transfers screen is the confirmation: finish the preview → confirm steps here, in one request
     for (let i = 0; i < 2 && b.autoConfirm && r.status === 'needs_confirmation'; i++) r = await TK.transfer(uid(req), b, r.confirmationToken);
@@ -381,6 +417,8 @@ export function createApp() {
         [uid(req), String(x.transferId ?? x.id ?? x.transfer?.id ?? '') || null, b.fromAccountId, b.toAccountId, b.amount, b.amountTo ?? null, b.description ?? '', b.date ?? null],
       ).catch((e) => console.error('transfer log', e));
     }
+    return { status: r.status, confirmationToken: r.confirmationToken, preview: r.preview };
+    });
     res.json(r);
   }));
   api.get('/talko/transfers', h(async (req, res) => {
@@ -438,7 +476,7 @@ export function createApp() {
   // ---------- errors ----------
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof ZodError) return res.status(400).json({ error: 'invalid', message: err.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') });
-    if (err instanceof IntegrationError) return res.status(err.status === 429 ? 429 : 400).json({ error: 'integration', message: err.message });
+    if (err instanceof IntegrationError) return res.status(err.status === 429 ? 429 : err.status >= 500 ? 503 : 400).json({ error: 'integration', message: err.message });
     if (err instanceof MoneyError || err instanceof L.Invalid) return res.status(400).json({ error: 'invalid', message: err.message });
     if (err instanceof L.NotFound) return res.status(404).json({ error: 'not_found', message: err.message });
     if (err?.code === '23505') return res.status(409).json({ error: 'conflict', message: 'Запис з такою назвою вже існує' });
