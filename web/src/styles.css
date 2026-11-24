@@ -266,3 +266,8 @@ label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width:
 .item { transition: transform .15s; }
 .m-trash { position: absolute; right: -52px; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; border-radius: 50%; border: 0; background: #ff3b30; color: #fff; font-size: 20px; }
 .list:has(.swiped) { overflow: hidden; }
+.m-micwrap { position: relative; display: flex; gap: 8px; align-items: stretch; }
+.m-micwrap > textarea, .m-micwrap > input { flex: 1; min-width: 0; }
+.m-mic { flex: none; width: 44px; min-height: 40px; border: 0; border-radius: 10px; background: #3a4a6a; color: #8ab4ff; display: grid; place-items: center; }
+.m-mic.on { background: #ff3b30; color: #fff; animation: micpulse 1s infinite; }
+@keyframes micpulse { 50% { opacity: .6; } }

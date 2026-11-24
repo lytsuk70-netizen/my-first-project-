@@ -137,7 +137,7 @@ function TxSheet({ type, amount, accountId, categoryId, comment, onClose, title 
               {ordered.map((c) => <button key={c.id} className={'chip' + (f.categoryId === c.id ? ' on' : '')} onClick={() => setF({ ...f, categoryId: c.id })}>{c.parentId ? '↳ ' : ''}{c.name}</button>)}
             </div>
           </Field>
-          <Field label={t.comment}><input className="input" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} maxLength={500} /></Field>
+          <Field label={t.comment}><div className="m-micwrap"><input className="input" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} maxLength={500} /><MicButton value={f.description} onChange={(v) => setF((x: any) => ({ ...x, description: v.slice(0, 500) }))} /></div></Field>
           <div className="grid2 stack">
             <Field label={t.project}>
               <select className="input" value={f.projectId} onChange={(e) => setF({ ...f, projectId: e.target.value })}>
@@ -396,7 +396,10 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
         <div className="m-modal" onClick={() => setEdit(null)}>
           <div className="m-modal-box" onClick={(e) => e.stopPropagation()}>
             {edit.kind === 'comment'
-              ? <textarea autoFocus className="input" rows={4} placeholder="Коментар" value={edit.value} maxLength={500} onChange={(e) => setEdit({ ...edit, value: e.target.value })} />
+              ? <div className="m-micwrap">
+                  <textarea className="input" rows={4} placeholder="Коментар — надиктуйте або напишіть" value={edit.value} maxLength={500} onChange={(e) => setEdit({ ...edit, value: e.target.value })} />
+                  <MicButton auto value={edit.value} onChange={(v) => setEdit((x) => x ? { ...x, value: v.slice(0, 500) } : x)} />
+                </div>
               : <input autoFocus type="date" className="input" value={edit.value} max={todayISO()} onChange={(e) => setEdit({ ...edit, value: e.target.value })} />}
             <div className="m-modal-btns">
               {edit.kind === 'comment' && <button onClick={() => setEdit({ ...edit, value: '' })}>Очистити</button>}
@@ -649,7 +652,7 @@ function TTransferScreen() {
         <button className="m-accrow" onClick={() => setPick('to')}><span>{to?.name ?? 'Оберіть рахунок'}</span><span className="num c-balance">{to ? money(to.balance, to.currency) : ''} ›</span></button>
         <div className="m-trbtns">
           <label className="m-gbtn">{date === todayISO() ? 'Сьогодні' : fmtDay(date, 'uk', { today: 'Сьогодні', yesterday: 'Вчора' })}<input type="date" value={date} max={todayISO()} onChange={(e) => e.target.value && setDate(e.target.value)} /></label>
-          <input className="m-gbtn" placeholder="Коментар" value={comment} maxLength={500} onChange={(e) => setComment(e.target.value)} />
+          <div className="m-micwrap"><input className="m-gbtn" placeholder="Коментар" value={comment} maxLength={500} onChange={(e) => setComment(e.target.value)} /><MicButton value={comment} onChange={(v) => setComment(v.slice(0, 500))} /></div>
           <div className="m-sumrow">
             <input className="m-gbtn num" inputMode="decimal" placeholder={fx ? `Сума, ${from!.currency}` : 'Сума'} value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^\d.,]/g, ''))} onKeyDown={(e) => e.key === 'Enter' && submit()} />
             <button className="m-ok" disabled={!valid || busy} onClick={submit} aria-label="Провести переказ">{busy ? '…' : '✓'}</button>
@@ -704,7 +707,7 @@ function TTransfer({ onClose, draft }: { onClose: () => void; draft?: { fromAcco
             {fx && <Field label={`${t.amountReceived}, ${to!.currency}`}><input className="input num" inputMode="decimal" value={f.amountTo} onChange={(e) => setF({ ...f, amountTo: e.target.value })} /></Field>}
           </div>
           {rate && <p className="faint">{t.rate}: {rate}</p>}
-          <Field label={t.comment}><input className="input" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
+          <Field label={t.comment}><div className="m-micwrap"><input className="input" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} maxLength={500} /><MicButton value={f.description} onChange={(v) => setF((x: any) => ({ ...x, description: v.slice(0, 500) }))} /></div></Field>
           <p className="faint">{t.transferNotIncome}</p>
           <ErrorBox error={error} />
           <div className="actions"><button className="btn primary" disabled={!valid} onClick={() => submit()}>{t.makeTransfer}</button></div>
@@ -784,6 +787,40 @@ function TReports() {
         </>
       )}
     </>
+  );
+}
+
+// ---------- dictation ----------
+
+/** 🎤 next to a comment field: tap and speak, the words are added to the text (Ukrainian). */
+function MicButton({ value, onChange, auto }: { value: string; onChange: (v: string) => void; auto?: boolean }) {
+  const { lang } = useT();
+  const { toast } = useTalko();
+  const [on, setOn] = useState(false);
+  const rec = useRef<any>(null);
+  const base = useRef('');
+  const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  function start() {
+    if (!SR) { toast('Диктування тут недоступне — натисніть 🎤 на клавіатурі телефона'); return; }
+    try {
+      const r = new SR(); r.lang = lang === 'en' ? 'en-US' : 'uk-UA'; r.interimResults = true; r.continuous = false;
+      base.current = value.trim();
+      r.onresult = (e: any) => {
+        const said = Array.from(e.results).map((x: any) => x[0].transcript).join(' ').trim();
+        const txt = (base.current ? base.current + ' ' : '') + said;
+        onChange(txt.charAt(0).toUpperCase() + txt.slice(1));
+      };
+      r.onend = () => setOn(false);
+      r.onerror = (e: any) => { setOn(false); if (e.error === 'not-allowed') toast('Дозвольте мікрофон для застосунку в налаштуваннях', true); };
+      rec.current = r; r.start(); setOn(true);
+    } catch { setOn(false); }
+  }
+  const stop = () => { try { rec.current?.stop(); } catch { /* */ } setOn(false); };
+  useEffect(() => { if (auto && SR) start(); return () => { try { rec.current?.abort(); } catch { /* */ } }; }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <button type="button" className={'m-mic' + (on ? ' on' : '')} onClick={on ? stop : start} aria-label={on ? 'Зупинити диктування' : 'Надиктувати'}>
+      {Icons.mic}
+    </button>
   );
 }
 
