@@ -215,6 +215,12 @@ export async function projects(userId: string) {
 
 export interface TxQuery { from?: string; to?: string; type?: 'income' | 'expense'; accountId?: string; categoryId?: string; projectId?: string; q?: string; max?: number }
 
+/** Time of the payment written in the comment, e.g. «Кондитерська (12:11)» (from a bank screenshot). */
+export function timeFromText(text: string): string | null {
+  const m = String(text).match(/(?:^|[\s(,])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])/);
+  return m ? `${m[1].padStart(2, '0')}:${m[2]}` : null;
+}
+
 /** Loads operations for a period (TALKO pages by document id) and returns them newest first. */
 export async function transactions(userId: string, q: TxQuery) {
   const rows: Json[] = [];
@@ -243,6 +249,7 @@ export async function transactions(userId: string, q: TxQuery) {
       amountBase: t.amountBase === null || t.amountBase === undefined ? null : money(t.amountBase, t.baseCurrency ?? 'UAH'), baseCurrency: t.baseCurrency ?? 'UAH',
       accountId: t.accountId, categoryId: t.categoryId || null, categoryName: t.categoryName || null, projectId: t.projectId || null,
       comment: t.description ?? '', counterparty: t.counterparty ?? '', occurredAt: t.date, localDate: String(t.date).slice(0, 10), source: t.source ?? '',
+      time: timeFromText(t.description ?? ''),
     })),
   };
 }

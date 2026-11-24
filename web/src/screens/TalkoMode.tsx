@@ -12,7 +12,7 @@ import { money, normalizeAmountInput, todayISO } from '../money';
 
 interface TAccount { id: string; name: string; type: string; currency: string; balance: string }
 interface TCategory { id: string; name: string; type: 'income' | 'expense'; parentId: string | null }
-interface TTx { id: string; type: 'income' | 'expense'; amount: string; currency: string; accountId: string; categoryName: string | null; comment: string; counterparty: string; occurredAt: string; localDate: string }
+interface TTx { id: string; type: 'income' | 'expense'; amount: string; currency: string; accountId: string; categoryName: string | null; comment: string; counterparty: string; occurredAt: string; localDate: string; time?: string | null }
 type Tab = 'expense' | 'income' | 'accounts' | 'feed' | 'menu';
 
 interface Ctx {
@@ -262,7 +262,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
     if (!acc) return;
     const n = amount.replace(',', '.');
     const cat = categories.find((c) => c.id === categoryId)?.name ?? '';
-    const tmp: TTx = { id: 'tmp-' + Date.now(), type, amount: n, currency: acc.currency, accountId, categoryName: cat, comment: '', counterparty: '', occurredAt: new Date().toISOString(), localDate: todayISO() };
+    const tmp: TTx = { id: 'tmp-' + Date.now(), type, amount: n, currency: acc.currency, accountId, categoryName: cat, comment: '', counterparty: '', occurredAt: new Date().toISOString(), localDate: todayISO(), time: new Date().toTimeString().slice(0, 5) };
     const delta = (exp ? -1 : 1) * Number(n);
     setPendingTx((p) => [tmp, ...p]); setSel(tmp.id); adjust(accountId, delta);
     setExpr(''); setFolder(null);
@@ -288,7 +288,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
     const list: TTx[] = today.data?.items ?? [];
     if (!newId.current || !list.length) return;
     const found = newId.current !== 'latest' ? list.find((x) => x.id === newId.current) : null;
-    setSel((found ?? [...list].sort((a, b) => String(b.occurredAt ?? '').localeCompare(String(a.occurredAt ?? '')))[0]).id);
+    setSel((found ?? [...list].sort((a, b) => String(b.time ?? '').localeCompare(String(a.time ?? '')))[0]).id);
     newId.current = null;
   }, [today.data]);
   function moveDate(i: TTx, date: string) {
@@ -494,6 +494,12 @@ function FolderManager({ type }: { type: 'income' | 'expense' }) {
   );
 }
 
+/** Comment without the time marker «(12:11)» — the time is shown on the right. */
+function cleanComment(c: string | null | undefined) {
+  const x = String(c ?? '').replace(/\s*\((?:[01]?\d|2[0-3]):[0-5]\d\)/g, '').replace(/\s+(?:[01]?\d|2[0-3]):[0-5]\d$/, '').trim();
+  return x === '—' ? '' : x;
+}
+
 function TxList({ items, compact, selected, onSelect, actions, onDelete, onYesterday, onDate }: { items: TTx[]; compact?: boolean; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode; onDelete?: (i: TTx) => Promise<void>; onYesterday?: (i: TTx) => void; onDate?: (i: TTx) => void }) {
   const { t, lang } = useT();
   const { accounts } = useTalko();
@@ -533,8 +539,8 @@ function TxList({ items, compact, selected, onSelect, actions, onDelete, onYeste
                   </div>
                 )}
                 <span className="ic">{catIcon(i.categoryName ?? '')}</span>
-                <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{i.comment && i.comment !== '—' && i.categoryName && <div className="t3">{i.comment}</div>}</div>
-                <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{i.occurredAt ? new Date(i.occurredAt).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' }) : ''}</small></div>
+                <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{(() => { const c = cleanComment(i.comment); return c && i.categoryName ? <div className="t3">{c}</div> : null; })()}</div>
+                <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{i.time ?? ''}</small></div>
                 {selected === i.id && actions && <div className="m-actions" onClick={(e) => e.stopPropagation()}>{actions(i)}</div>}
                 {swiped === i.id && onDelete && (
                   <button className="m-trash" aria-label="Видалити" disabled={deleting === i.id}

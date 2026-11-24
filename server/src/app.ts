@@ -318,7 +318,16 @@ export function createApp() {
   api.get('/talko/transactions', h(async (req, res) => {
     const q = z.object({ from: isoDate.optional(), to: isoDate.optional(), type: z.enum(['income', 'expense']).optional(), accountId: text(200).optional(),
       categoryId: text(200).optional(), projectId: text(200).optional(), q: text(100).optional(), max: z.coerce.number().int().min(1).max(5000).optional() }).parse(req.query);
-    res.json(await TK.transactions(uid(req), q));
+    const r: any = await TK.transactions(uid(req), q);
+    // time the app recorded the entry (TALKO keeps only the day); a time written in the comment wins — it is the bank's time
+    if (r.items.length) {
+      const { rows } = await pool.query("SELECT talko_id, to_char(at AT TIME ZONE 'Europe/Kyiv', 'HH24:MI') AS t FROM talko_tx_time WHERE user_id = $1 AND talko_id = ANY($2)",
+        [uid(req), r.items.map((x: any) => String(x.id))]).catch(() => ({ rows: [] as any[] }));
+      const tm = new Map(rows.map((x: any) => [x.talko_id, x.t]));
+      for (const x of r.items) x.time = x.time ?? tm.get(String(x.id)) ?? null;
+      r.items.sort((a: any, b: any) => String(b.localDate).localeCompare(String(a.localDate)) || String(b.time ?? '').localeCompare(String(a.time ?? '')));
+    }
+    res.json(r);
   }));
   api.get('/talko/report', h(async (req, res) => { const q = z.object({ from: isoDate, to: isoDate }).parse(req.query); res.json(await TK.report(uid(req), q.from, q.to)); }));
   api.post('/talko/transactions', h(async (req, res) => {
@@ -329,6 +338,7 @@ export function createApp() {
     let r: any = await TK.addTransaction(uid(req), { ...b, amount: n }, b.confirmationToken);
     // one-tap entry: the tap is the confirmation, so confirm on the server in the same request (one round trip from the phone)
     if (b.autoConfirm && r.status === 'needs_confirmation') r = await TK.addTransaction(uid(req), { ...b, amount: n }, r.confirmationToken);
+    if (r.status === 'saved' && r.id) await pool.query('INSERT INTO talko_tx_time (user_id, talko_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [uid(req), String(r.id)]).catch((e) => console.error('tx time', e));
     res.json(r);
   }));
   // Voice in TALKO mode: the same interpreter, matched against TALKO's accounts and categories.
