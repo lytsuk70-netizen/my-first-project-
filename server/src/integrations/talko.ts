@@ -303,6 +303,15 @@ export async function editTransaction(userId: string, id: string, input: { descr
   return { status: 'saved' as const, result: r };
 }
 
+/** Soft-delete a TALKO operation (balance is rolled back). The swipe + 🗑 tap in the app is the user's confirmation. */
+export async function deleteTransaction(userId: string, id: string) {
+  const reason = 'Видалено користувачем у застосунку «Гроші ОК»';
+  let r = await talko(userId, 'talko_delete_transaction', { transactionId: id });
+  const token = confirmationOf(r);
+  if (token) r = await talko(userId, 'talko_delete_transaction', { transactionId: id, confirmationToken: token, confirmationReason: reason });
+  return { status: 'deleted' as const, result: r };
+}
+
 export async function transfer(userId: string, input: { fromAccountId: string; toAccountId: string; amount: string; amountTo?: string; description?: string; date?: string }, confirmationToken?: string) {
   const base: Json = {
     fromAccountId: input.fromAccountId, toAccountId: input.toAccountId, amount: Number(input.amount),

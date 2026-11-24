@@ -323,6 +323,10 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
           </div>
         ) : (
           <TxList items={today.data?.items ?? []} compact selected={sel} onSelect={(id) => setSel(sel === id ? null : id)}
+            onDelete={async (i) => {
+              try { await api('DELETE', '/talko/transactions/' + encodeURIComponent(i.id)); if (sel === i.id) setSel(null); await changed(); toast(`Видалено: ${i.categoryName ?? ''} ${money(i.amount, i.currency)}`); }
+              catch (e: any) { toast('Не видалено: ' + (e?.message ?? 'помилка'), true); }
+            }}
             actions={(i) => (<>
               <button onClick={() => setEdit({ id: i.id, kind: 'comment', value: i.comment === '—' ? '' : (i.comment ?? '') })} aria-label="Коментар">✎<span>Коментар</span></button>
               <button onClick={() => setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() })} aria-label="Дата">📅<span>Дата</span></button>
@@ -434,9 +438,23 @@ function FolderManager({ type }: { type: 'income' | 'expense' }) {
   );
 }
 
-function TxList({ items, compact, selected, onSelect, actions }: { items: TTx[]; compact?: boolean; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode }) {
+function TxList({ items, compact, selected, onSelect, actions, onDelete }: { items: TTx[]; compact?: boolean; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode; onDelete?: (i: TTx) => Promise<void> }) {
   const { t, lang } = useT();
   const { accounts } = useTalko();
+  // swipe left on an entry reveals the red trash button, like «Деньги ОК»
+  const [swiped, setSwiped] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const touch = useRef<{ id: string; x: number; y: number } | null>(null);
+  const sw = onDelete ? (i: TTx) => ({
+    onTouchStart: (e: React.TouchEvent) => { touch.current = { id: i.id, x: e.touches[0].clientX, y: e.touches[0].clientY }; },
+    onTouchEnd: (e: React.TouchEvent) => {
+      const st = touch.current; touch.current = null;
+      if (!st || st.id !== i.id) return;
+      const dx = e.changedTouches[0].clientX - st.x, dy = e.changedTouches[0].clientY - st.y;
+      if (Math.abs(dx) < 40 || Math.abs(dy) > Math.abs(dx)) return;
+      setSwiped(dx < 0 ? i.id : null);
+    },
+  }) : () => ({});
   if (!items.length) return <div className="empty">{t.nothing}</div>;
   const days: Array<[string, TTx[]]> = [];
   for (const i of items) { const l = days[days.length - 1]; if (l && l[0] === i.localDate) l[1].push(i); else days.push([i.localDate, [i]]); }
@@ -447,11 +465,18 @@ function TxList({ items, compact, selected, onSelect, actions }: { items: TTx[];
           {!compact && <div className="day-head"><span>{fmtDay(d, lang, t)}</span></div>}
           <div className="list">
             {list.map((i) => (
-              <div key={i.id} className={'item' + (selected === i.id ? ' sel' : '')} onClick={onSelect ? () => onSelect(i.id) : undefined}>
+              <div key={i.id} className={'item' + (selected === i.id ? ' sel' : '') + (swiped === i.id ? ' swiped' : '')} {...sw(i)}
+                onClick={() => { if (swiped) { setSwiped(null); return; } onSelect?.(i.id); }}>
                 <span className="ic">{catIcon(i.categoryName ?? '')}</span>
                 <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{i.comment && i.comment !== '—' && i.categoryName && <div className="t3">{i.comment}</div>}</div>
                 <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{i.occurredAt ? new Date(i.occurredAt).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' }) : ''}</small></div>
                 {selected === i.id && actions && <div className="m-actions" onClick={(e) => e.stopPropagation()}>{actions(i)}</div>}
+                {swiped === i.id && onDelete && (
+                  <button className="m-trash" aria-label="Видалити" disabled={deleting === i.id}
+                    onClick={async (e) => { e.stopPropagation(); setDeleting(i.id); try { await onDelete(i); setSwiped(null); } finally { setDeleting(null); } }}>
+                    {deleting === i.id ? '…' : '🗑'}
+                  </button>
+                )}
               </div>
             ))}
           </div>

@@ -333,6 +333,9 @@ export function createApp() {
     const b = z.object({ description: text(500).optional(), date: isoDate.optional() }).parse(req.body);
     res.json(await TK.editTransaction(uid(req), String(req.params.id), b));
   }));
+  api.delete('/talko/transactions/:id', h(async (req, res) => {
+    res.json(await TK.deleteTransaction(uid(req), String(req.params.id)));
+  }));
   api.post('/talko/voice', h(async (req, res) => {
     const b = z.object({ text: text(500).min(1), defaultType: z.enum(['income', 'expense']).optional() }).parse(req.body);
     const [acc, cats] = await Promise.all([TK.accounts(uid(req)), TK.categories(uid(req))]);
