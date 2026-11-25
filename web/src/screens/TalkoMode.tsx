@@ -11,6 +11,9 @@ import { useT } from '../i18n';
 import { money, normalizeAmountInput, todayISO } from '../money';
 import * as SY from '../talkoSync';
 import type { Op } from '../talkoSync';
+// the same voice parser as the server, run on the phone: no waiting for the server or TALKO
+import { interpret } from '../../../server/src/engine/commands';
+import type { Draft } from '../../../server/src/engine/parser';
 
 interface TAccount { id: string; name: string; type: string; currency: string; balance: string }
 interface TCategory { id: string; name: string; type: 'income' | 'expense'; parentId: string | null }
@@ -279,6 +282,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   const [voice, setVoice] = useState(false);
   const [sel, setSel] = useState<string | null>(null);
   const [hist, setHist] = useState(false);
+  const voiceComment = useRef('');
   const [edit, setEdit] = useState<{ id: string; kind: 'comment' | 'date'; value: string } | null>(null);
   useEffect(() => { if (accounts.length && !accounts.some((a) => a.id === accountId)) setAccountId(accounts[0].id); }, [accounts, accountId]);
   // today's list: shown at once from the phone's memory, refreshed from TALKO in the background,
@@ -349,8 +353,33 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
     const now = new Date();
     const tmpId = 'tmp-' + SY.uid();
     const item: TTx = { id: tmpId, type, amount: n, currency: acc.currency, accountId, categoryName: cat, comment: '', counterparty: '', occurredAt: now.toISOString(), localDate: todayISO(), time: now.toTimeString().slice(0, 5) };
-    enqueue({ id: SY.uid(), kind: 'add', tmpId, at: now.toISOString(), tries: 0, body: { type, amount: n, accountId, categoryId, projectId: null, description: '', date: todayISO() }, item });
+    const description = voiceComment.current; voiceComment.current = '';
+    enqueue({ id: SY.uid(), kind: 'add', tmpId, at: now.toISOString(), tries: 0, body: { type, amount: n, accountId, categoryId, projectId: null, description, date: todayISO() }, item: { ...item, comment: description } });
     setSel(tmpId); setExpr(''); setFolder(null);
+  }
+  /** Voice: a full phrase («100 Приват кава») is saved at once; otherwise the amount and account are filled in and you tap the category. */
+  function fromVoice(d: Draft): boolean {
+    if ((d.type ?? type) !== type || !d.amount) return false;
+    const n = normalizeAmountInput(d.amount);
+    const accId = d.accountId ?? accountId;
+    const acc = accounts.find((a) => a.id === accId);
+    const day = d.occurredAt ? (() => { const x = new Date(d.occurredAt!); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; })() : todayISO();
+    if (acc && d.categoryId) {
+      const now = new Date();
+      const tmpId = 'tmp-' + SY.uid();
+      const cat = categories.find((c) => c.id === d.categoryId)?.name ?? '';
+      enqueue({ id: SY.uid(), kind: 'add', tmpId, at: now.toISOString(), tries: 0,
+        body: { type, amount: n, accountId: acc.id, categoryId: d.categoryId, projectId: null, description: d.comment ?? '', date: day },
+        item: { id: tmpId, type, amount: n, currency: acc.currency, accountId: acc.id, categoryName: cat, comment: d.comment ?? '', counterparty: '', occurredAt: now.toISOString(), localDate: day, time: now.toTimeString().slice(0, 5) } });
+      setSel(tmpId);
+      toast(`Записано: ${money(n, acc.currency)} · ${cat} · ${acc.name}`);
+      return true;
+    }
+    if (d.accountId) setAccountId(d.accountId);
+    voiceComment.current = d.comment ?? '';
+    setExpr(n.replace('.', ','));
+    toast('Сума ' + money(n, acc?.currency ?? 'UAH') + ' — оберіть статтю');
+    return true;
   }
   function moveDate(i: TTx, date: string) {
     if (sel === i.id) setSel(null);
@@ -385,7 +414,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
       <div className={'m-amount' + (expr ? '' : ' ph')}>
         <span className="m-amount-txt num">{expr ? expr : t.enterAmount}</span>
         {expr && /[+\-×÷]/.test(expr) && amount && <span className="m-amount-res num">= {amount}</span>}
-        {expr && <button className="m-clear" onClick={() => setExpr('')} aria-label="Очистити">✕</button>}
+        {expr && <button className="m-clear" onClick={() => { setExpr(''); voiceComment.current = ''; }} aria-label="Очистити">✕</button>}
       </div>
       <div className="m-accs">
         <div className="m-acc-grid">
@@ -454,7 +483,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
         </Sheet>
       )}
       {open && <TxSheet type={type} amount={amount.replace(',', '.')} accountId={accountId} categoryId={open} onClose={() => { setOpen(null); setExpr(''); setFolder(null); }} />}
-      {voice && <TVoice defaultType={type} onClose={() => setVoice(false)} />}
+      {voice && <TVoice defaultType={type} onClose={() => setVoice(false)} onDraft={fromVoice} />}
       {hist && <THistory type={type} onClose={() => setHist(false)} />}
       {edit && (
         <div className="m-modal" onClick={() => setEdit(null)}>
@@ -1013,8 +1042,9 @@ function MicButton({ value, onChange, auto }: { value: string; onChange: (v: str
 
 // ---------- voice ----------
 
-function TVoice({ defaultType, onClose }: { defaultType: 'income' | 'expense'; onClose: () => void }) {
+function TVoice({ defaultType, onClose, onDraft }: { defaultType: 'income' | 'expense'; onClose: () => void; onDraft?: (d: Draft) => boolean }) {
   const { t, lang } = useT();
+  const { accounts, categories } = useTalko();
   const [text, setText] = useState('');
   const [listening, setListening] = useState(false);
   const [answer, setAnswer] = useState('');
@@ -1027,6 +1057,11 @@ function TVoice({ defaultType, onClose }: { defaultType: 'income' | 'expense'; o
   async function run(phrase = text) {
     if (!phrase.trim()) return;
     try {
+      // expenses, incomes and transfers are understood on the phone at once
+      const local = interpret(phrase, accounts.map((a) => ({ id: a.id, name: a.name, currency: a.currency })), categories.map((c) => ({ id: c.id, name: c.name, type: c.type })), { lang: lang === 'en' ? 'en' : 'uk', defaultType });
+      if (local.intent === 'transaction' && onDraft && onDraft(local.draft)) { recRef.current?.abort?.(); onClose(); return; }
+      if (local.intent === 'transaction') { setDraft(local.draft); return; }
+      if (local.intent === 'transfer') { setTransfer({ fromAccountId: local.fromAccountId, toAccountId: local.toAccountId, amount: local.amount }); return; }
       const r = await post('/talko/voice', { text: phrase, defaultType });
       const c = r.command;
       if (c.intent === 'transaction') { setDraft(c.draft); say(c.draft.questions.join(' ')); return; }
@@ -1037,7 +1072,7 @@ function TVoice({ defaultType, onClose }: { defaultType: 'income' | 'expense'; o
   function listen() {
     if (!SR) { setError(t.voiceUnsupported); return; }
     const rec = new SR(); rec.lang = lang === 'en' ? 'en-US' : 'uk-UA'; rec.interimResults = true;
-    rec.onresult = (e: any) => { const p = Array.from(e.results).map((x: any) => x[0].transcript).join(' '); setText(p); if (e.results[e.results.length - 1].isFinal) run(p); };
+    rec.onresult = (e: any) => { const p = Array.from(e.results).map((x: any) => x[0].transcript).join(' '); setText(p); };
     rec.onend = () => setListening(false);
     rec.onerror = (e: any) => { setListening(false); if (e.error !== 'no-speech' && e.error !== 'aborted') setError(e.error); };
     recRef.current = rec; rec.start(); setListening(true);
