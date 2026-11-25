@@ -286,3 +286,4 @@ label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width:
 .m-histbody { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .m-histfilters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .m-histfilters .m-accrow { font-size: 15px; gap: 6px; min-width: 0; }
+.m-sticky { position: sticky; bottom: 0; z-index: 2; padding: 10px 0 calc(env(safe-area-inset-bottom) + 6px); background: linear-gradient(transparent, var(--surface, #1c1c1e) 30%); }

@@ -146,7 +146,13 @@ function TxSheet({ type, amount, accountId, categoryId, comment, onClose, title 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const cats = categories.filter((c) => c.type === f.type);
-  const ordered = cats.filter((c) => !c.parentId || !cats.some((p) => p.id === c.parentId)).flatMap((p) => [p, ...cats.filter((c) => c.parentId === p.id)]);
+  // personal categories (and ПВ) first, like the entry screen; «Усі статті» shows the business ones too
+  const [allCats, setAllCats] = useState(false);
+  const mine = mainCategories(categories, f.type);
+  const mineIds = new Set(mine.map((c) => c.id));
+  const ordered = allCats
+    ? cats.filter((c) => !c.parentId || !cats.some((p) => p.id === c.parentId)).flatMap((p) => [p, ...cats.filter((c) => c.parentId === p.id)])
+    : [...mine, ...cats.filter((c) => c.parentId && mineIds.has(c.parentId) && !mineIds.has(c.id)), ...cats.filter((c) => c.id === f.categoryId && !mineIds.has(c.id) && !(c.parentId && mineIds.has(c.parentId)))];
   const valid = /^\d+([.,]\d{1,2})?$/.test(f.amount.trim()) && Number(normalizeAmountInput(f.amount)) > 0 && f.accountId && f.categoryId;
   // saved in the app at once; sent to TALKO by the background queue
   async function submit(_token?: string) {
@@ -187,7 +193,8 @@ function TxSheet({ type, amount, accountId, categoryId, comment, onClose, title 
           </div>
           <Field label={t.category}>
             <div className="chips" style={{ flexWrap: 'wrap' }}>
-              {ordered.map((c) => <button key={c.id} className={'chip' + (f.categoryId === c.id ? ' on' : '')} onClick={() => setF({ ...f, categoryId: c.id })}>{c.parentId ? '↳ ' : ''}{c.name}</button>)}
+              {ordered.map((c) => <button key={c.id} className={'chip' + (f.categoryId === c.id ? ' on' : '')} onClick={() => setF({ ...f, categoryId: c.id })}>{allCats && c.parentId ? '↳ ' : ''}{c.name}</button>)}
+              <button className="chip" onClick={() => setAllCats(!allCats)}>{allCats ? 'Лише мої' : 'Усі статті…'}</button>
             </div>
           </Field>
           <Field label={t.comment}><div className="m-micwrap"><input className="input" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} maxLength={500} /><MicButton value={f.description} onChange={(v) => setF((x: any) => ({ ...x, description: v.slice(0, 500) }))} /></div></Field>
@@ -201,7 +208,7 @@ function TxSheet({ type, amount, accountId, categoryId, comment, onClose, title 
             <Field label={t.date}><input className="input" type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></Field>
           </div>
           <ErrorBox error={error} />
-          <div className="actions"><button className={'btn ' + (f.type === 'expense' ? 'expense' : 'income')} disabled={!valid || busy} onClick={() => submit()}>{t.save}</button></div>
+          <div className="actions m-sticky"><button className={'btn ' + (f.type === 'expense' ? 'expense' : 'income')} disabled={!valid || busy} onClick={() => submit()}>{valid ? `${t.save} · ${money(normalizeAmountInput(f.amount), acc?.currency)}` : 'Оберіть рахунок і статтю'}</button></div>
         </>
       )}
     </Sheet>
