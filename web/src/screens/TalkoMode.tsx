@@ -289,6 +289,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   const [voice, setVoice] = useState(false);
   const [sel, setSel] = useState<string | null>(null);
   const [hist, setHist] = useState(false);
+  const [accPick, setAccPick] = useState(false);
   const voiceComment = useRef('');
   const [edit, setEdit] = useState<{ id: string; kind: 'comment' | 'date'; value: string } | null>(null);
   useEffect(() => { if (accounts.length && !accounts.some((a) => a.id === accountId)) setAccountId(accounts[0].id); }, [accounts, accountId]);
@@ -338,8 +339,11 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
     if (a.length >= 24) return a;
     return last === '0' ? a.slice(0, -1) + k : a + k;
   });
-  const pages = Math.max(1, Math.ceil(accounts.length / PAGE));
-  const shown = accounts.slice(page * PAGE, page * PAGE + PAGE);
+  // the first four accounts as tiles; the chosen one is always among them (like «Деньги ОК»)
+  const first = accounts.slice(0, PAGE);
+  const chosen = accounts.find((a) => a.id === accountId);
+  const shown = chosen && !first.some((a) => a.id === chosen.id) ? [...first.slice(0, PAGE - 1), chosen] : first;
+  void page; void setPage;
   const folders = folderIds(categories);
   const cats = folder ? [...categories.filter((c) => c.id === folder), ...categories.filter((c) => c.parentId === folder)] : mainCategories(categories, type).filter((c) => !c.parentId || !folders.has(c.parentId) || !mainCategories(categories, type).some((m) => m.id === c.parentId));
   const folderName = folder ? categories.find((c) => c.id === folder)?.name : null;
@@ -431,7 +435,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
             </button>
           ))}
         </div>
-        {pages > 1 && <button className="m-acc-next" onClick={() => setPage((page + 1) % pages)} aria-label="Інші рахунки">›</button>}
+        {accounts.length > PAGE && <button className="m-acc-next" onClick={() => setAccPick(true)} aria-label="Усі рахунки">›</button>}
       </div>
       <div className="m-strip">{exp ? 'Витрачено сьогодні' : 'Отримано сьогодні'}: <b className="num">{totalTxt}</b></div>
       <div className="m-mid">
@@ -492,6 +496,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
       {open && <TxSheet type={type} amount={amount.replace(',', '.')} accountId={accountId} categoryId={open} onClose={() => { setOpen(null); setExpr(''); setFolder(null); }} />}
       {voice && <TVoice defaultType={type} onClose={() => setVoice(false)} onDraft={fromVoice} />}
       {hist && <THistory type={type} onClose={() => setHist(false)} />}
+      {accPick && <div className="m-hist"><AccountPicker title="Рахунки" value={accountId} onPick={(id) => { setAccountId(id); try { localStorage.setItem('gok.talko.acc.' + type, id); } catch { /* ignore */ } }} onClose={() => setAccPick(false)} /></div>}
       {edit && (
         <div className="m-modal" onClick={() => setEdit(null)}>
           <div className="m-modal-box" onClick={(e) => e.stopPropagation()}>
