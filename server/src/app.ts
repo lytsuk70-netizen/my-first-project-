@@ -487,7 +487,7 @@ export function createApp() {
     if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'too_large', message: 'Request too large' });
     console.error(err);
     // the error code (e.g. a database code like 42P01) helps find the cause without exposing data
-    res.status(500).json({ error: 'server_error', message: 'Внутрішня помилка сервера', code: String(err?.code ?? err?.name ?? '').slice(0, 40) });
+    res.status(500).json({ error: 'server_error', message: 'Внутрішня помилка сервера', code: String(err?.code ?? err?.name ?? '').slice(0, 40), detail: err instanceof TypeError ? String(err.message).slice(0, 160) : undefined });
   });
   return app;
 }
