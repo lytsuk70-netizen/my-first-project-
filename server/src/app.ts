@@ -423,7 +423,7 @@ export function createApp() {
   }));
   api.get('/talko/transfers', h(async (req, res) => {
     const { rows } = await pool.query(
-      "SELECT id, talko_id AS \"talkoId\", from_account_id AS \"fromAccountId\", to_account_id AS \"toAccountId\", amount::text, amount_to::text AS \"amountTo\", description, to_char(op_date, 'YYYY-MM-DD') AS date FROM talko_transfer_log WHERE user_id = $1 AND op_date >= CURRENT_DATE - 60 ORDER BY op_date DESC, id DESC LIMIT 200",
+      "SELECT id::int AS id, talko_id AS \"talkoId\", from_account_id AS \"fromAccountId\", to_account_id AS \"toAccountId\", amount::text, amount_to::text AS \"amountTo\", description, to_char(op_date, 'YYYY-MM-DD') AS date FROM talko_transfer_log WHERE user_id = $1 AND op_date >= CURRENT_DATE - 60 ORDER BY op_date DESC, id DESC LIMIT 200",
       [uid(req)],
     );
     res.json(rows);
