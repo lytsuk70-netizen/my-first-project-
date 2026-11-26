@@ -19,3 +19,28 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   });
 }
+
+/**
+ * New version check: the app opens from the cache, so after an update it would show the old version once more.
+ * On start and whenever the app comes back to the screen, compare the page on the server with the running one;
+ * if it changed, drop the cached page and reload — the new version appears right away.
+ */
+const runningScript = (document.querySelector('script[type="module"][src*="/assets/"]') as HTMLScriptElement | null)?.getAttribute('src') ?? '';
+let lastCheck = 0;
+async function checkForUpdate() {
+  if (!runningScript || Date.now() - lastCheck < 30_000) return;
+  lastCheck = Date.now();
+  try {
+    const html = await (await fetch('/?v=' + Date.now(), { cache: 'no-store' })).text();
+    const fresh = html.match(/\/assets\/index-[^"']+\.js/)?.[0];
+    if (!fresh || fresh === runningScript) return;
+    if (sessionStorage.getItem('gok.updated') === fresh) return; // reload at most once per version
+    sessionStorage.setItem('gok.updated', fresh);
+    await caches.open('gok-shell-v2').then((c) => c.delete('/')).catch(() => {});
+    location.reload();
+  } catch { /* offline: keep the cached version */ }
+}
+if (location.protocol === 'https:') {
+  window.addEventListener('load', () => { setTimeout(checkForUpdate, 1500); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); });
+}
