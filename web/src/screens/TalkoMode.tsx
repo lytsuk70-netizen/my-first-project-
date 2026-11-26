@@ -10,6 +10,7 @@ import { ErrorBox, Field, Icons, Sheet, fmtDay } from '../components/ui';
 import { useT } from '../i18n';
 import { money, normalizeAmountInput, todayISO } from '../money';
 import * as SY from '../talkoSync';
+import { photoToPage, pagesToPdf, bytesToBase64, type ScanPage } from '../scan';
 import type { Op } from '../talkoSync';
 // the same voice parser as the server, run on the phone: no waiting for the server or TALKO
 import { interpret } from '../../../server/src/engine/commands';
@@ -885,6 +886,9 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
   const [uploading, setUploading] = useState(false);
   const [askDelete, setAskDelete] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const camRef = useRef<HTMLInputElement>(null);
+  const [scan, setScan] = useState<ScanPage[] | null>(null);
+  const [scanBusy, setScanBusy] = useState(false);
   const pending = tx.id.startsWith('tmp-');
   const acc = accounts.find((a) => a.id === tx.accountId);
   const exp = tx.type === 'expense';
@@ -927,6 +931,32 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
       edit({ description: keep ? `${v} (${tx.time})`.trim() : v });
     }
     setMode(null);
+  }
+  async function addScanPage(f: File | undefined) {
+    if (camRef.current) camRef.current.value = '';
+    if (!f) return;
+    setScanBusy(true);
+    try { const pg = await photoToPage(f); setScan((x) => [...(x ?? []), pg]); }
+    catch { toast('Не вдалося обробити фото', true); }
+    finally { setScanBusy(false); }
+  }
+  async function saveScan() {
+    if (!scan?.length) return;
+    const d = new Date();
+    const name = `Скан ${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()} ${d.toTimeString().slice(0, 5).replace(':', '-')}.pdf`;
+    const pdf = pagesToPdf(scan);
+    if (pdf.length > 10 * 1024 * 1024) { toast('Забагато сторінок: файл більший за 10 МБ', true); return; }
+    await upload({ name, contentType: 'application/pdf', data: bytesToBase64(pdf) });
+    scan.forEach((p) => URL.revokeObjectURL(p.preview)); setScan(null);
+  }
+  async function upload(body: { name: string; contentType: string; data: string }) {
+    if (pending) { toast('Зачекайте кілька секунд — витрата ще записується в TALKO', true); return; }
+    setUploading(true);
+    try {
+      const r = await post('/talko/transactions/' + encodeURIComponent(tx.id) + '/files', body);
+      setFiles((x) => [...(x ?? []), r]); toast('Файл додано');
+    } catch (e: any) { toast('Файл не додано: ' + (e?.message ?? 'помилка'), true); }
+    finally { setUploading(false); }
   }
   async function addFile(f: File | undefined) {
     if (!f) return;
@@ -972,6 +1002,7 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
             </a>
           ))}
           <button className="m-erow m-eadd" disabled={uploading} onClick={() => fileRef.current?.click()}>{uploading ? 'Завантажую…' : '📷 Додати фото або файл'}</button>
+          <button className="m-erow m-eadd" disabled={uploading} onClick={() => { if (pending) { toast('Зачекайте кілька секунд — витрата ще записується в TALKO', true); return; } setScan([]); setTimeout(() => camRef.current?.click(), 50); }}>📄 Сканувати документ</button>
           <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf,.heic,.doc,.docx,.xls,.xlsx" hidden onChange={(e) => addFile(e.target.files?.[0])} />
         </div>
         <div className="m-egroup">
@@ -981,6 +1012,27 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
             : <button className="m-erow m-edanger" onClick={() => setAskDelete(true)}>{exp ? 'Видалити витрату…' : 'Видалити дохід…'}</button>}
         </div>
       </div>
+      <input ref={camRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => addScanPage(e.target.files?.[0])} />
+      {scan && (
+        <div className="m-hist">
+          <div className="m-picker-top"><button onClick={() => { scan.forEach((p) => URL.revokeObjectURL(p.preview)); setScan(null); }} aria-label="Скасувати">‹</button><b>Скан · {scan.length} стор.</b><span /></div>
+          <div className="m-histbody m-scan">
+            {scan.map((p, i) => (
+              <div key={p.preview} className="m-scanpage">
+                <img src={p.preview} alt={'Сторінка ' + (i + 1)} />
+                <button onClick={() => { URL.revokeObjectURL(p.preview); setScan((x) => (x ?? []).filter((_, k) => k !== i)); }} aria-label="Прибрати сторінку">✕</button>
+                <span>{i + 1}</span>
+              </div>
+            ))}
+            {!scan.length && !scanBusy && <div className="empty">Сфотографуйте документ — сторінка стане чорно-білою, як скан.</div>}
+            {scanBusy && <div className="empty">Обробляю сторінку…</div>}
+          </div>
+          <div className="m-scanbtns">
+            <button onClick={() => camRef.current?.click()} disabled={scanBusy}>📷 {scan.length ? 'Ще сторінка' : 'Сфотографувати'}</button>
+            <button className="ok" disabled={!scan.length || scanBusy || uploading} onClick={saveScan}>{uploading ? 'Зберігаю…' : 'Готово — зберегти PDF'}</button>
+          </div>
+        </div>
+      )}
       {mode && (
         <div className="m-modal" onClick={() => setMode(null)}>
           <div className="m-modal-box" onClick={(e) => e.stopPropagation()}>
