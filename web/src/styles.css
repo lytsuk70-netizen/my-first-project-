@@ -288,3 +288,18 @@ label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width:
 .m-histfilters .m-accrow { font-size: 15px; gap: 6px; min-width: 0; }
 .m-sticky { position: sticky; bottom: 0; z-index: 2; padding: 10px 0 calc(env(safe-area-inset-bottom) + 6px); background: linear-gradient(transparent, var(--surface, #1c1c1e) 30%); }
 .m-hist > .m-picker { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.m-egroup { background: var(--surface, #1c1c1e); border-radius: 12px; margin: 10px 0; overflow: hidden; }
+.m-erow { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 10px; border: 0; background: none; color: var(--text); padding: 13px 14px; font-size: 16px; text-align: left; border-bottom: 1px solid var(--line, #2c2c2e); }
+.m-erow:last-child { border-bottom: 0; }
+.m-erow:disabled { opacity: 1; }
+.m-eval { color: var(--balance, #ff5fa2); display: flex; align-items: center; gap: 6px; min-width: 0; text-align: right; }
+.m-ecomment { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60vw; }
+.m-eadd { justify-content: center; color: var(--accent); }
+.m-edanger { justify-content: center; color: #ff453a; }
+.m-edel { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
+.m-edel span { flex: 1; }
+.m-edel button { border: 0; border-radius: 8px; padding: 8px 12px; background: #3a3a3c; color: var(--text); }
+.m-edel button.danger { background: #ff453a; color: #fff; }
+.m-efile { display: flex; align-items: center; gap: 10px; padding: 8px 14px; color: var(--text); text-decoration: none; border-bottom: 1px solid var(--line, #2c2c2e); }
+.m-efile img { width: 54px; height: 54px; object-fit: cover; border-radius: 8px; }
+.m-edoc { width: 54px; height: 54px; display: grid; place-items: center; font-size: 28px; background: #2c2c2e; border-radius: 8px; }

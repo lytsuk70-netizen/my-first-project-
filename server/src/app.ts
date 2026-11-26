@@ -349,6 +349,10 @@ export function createApp() {
         [uid(req), r.items.map((x: any) => String(x.id))]).catch(() => ({ rows: [] as any[] }));
       const tm = new Map(rows.map((x: any) => [x.talko_id, x.t]));
       for (const x of r.items) x.time = x.time ?? tm.get(String(x.id)) ?? null;
+      const files = await pool.query('SELECT talko_id, count(*)::int AS n FROM talko_tx_files WHERE user_id = $1 AND talko_id = ANY($2) GROUP BY talko_id',
+        [uid(req), r.items.map((x: any) => String(x.id))]).catch(() => ({ rows: [] as any[] }));
+      const fm = new Map(files.rows.map((x: any) => [x.talko_id, x.n]));
+      for (const x of r.items) x.files = fm.get(String(x.id)) ?? 0;
       r.items.sort((a: any, b: any) => String(b.localDate).localeCompare(String(a.localDate)) || String(b.time ?? '').localeCompare(String(a.time ?? '')));
     }
     res.json(r);
@@ -374,8 +378,27 @@ export function createApp() {
   }));
   // Voice in TALKO mode: the same interpreter, matched against TALKO's accounts and categories.
   api.patch('/talko/transactions/:id', h(async (req, res) => {
-    const b = z.object({ description: text(500).optional(), date: isoDate.optional() }).parse(req.body);
-    res.json(await TK.editTransaction(uid(req), String(req.params.id), b));
+    const b = z.object({ description: text(500).optional(), date: isoDate.optional(), categoryId: text(200).optional(), amount: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
+      time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(), day: isoDate.optional() }).parse(req.body);
+    const r = await TK.editTransaction(uid(req), String(req.params.id), b);
+    // TALKO keeps only the day: the time lives in the app's own table
+    if (b.time && (b.day || b.date)) {
+      await pool.query(
+        "INSERT INTO talko_tx_time (user_id, talko_id, at) VALUES ($1,$2,(($3::date + $4::time) AT TIME ZONE 'Europe/Kyiv')) ON CONFLICT (user_id, talko_id) DO UPDATE SET at = EXCLUDED.at",
+        [uid(req), String(req.params.id), (b.date ?? b.day)!.slice(0, 10), b.time]);
+    }
+    res.json(r);
+  }));
+  api.get('/talko/transactions/:id/files', h(async (req, res) => {
+    const { rows } = await pool.query('SELECT id::int AS id, name, url, content_type AS "contentType" FROM talko_tx_files WHERE user_id = $1 AND talko_id = $2 ORDER BY id', [uid(req), String(req.params.id)]);
+    res.json(rows);
+  }));
+  api.post('/talko/transactions/:id/files', h(async (req, res) => {
+    const b = z.object({ name: text(200).min(1), contentType: text(100), data: z.string().min(10).max(15_000_000) }).parse(req.body);
+    const f = await TK.uploadFile(uid(req), b);
+    const { rows } = await pool.query('INSERT INTO talko_tx_files (user_id, talko_id, name, url, file_id, content_type) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id::int AS id, name, url, content_type AS "contentType"',
+      [uid(req), String(req.params.id), b.name, f.url, f.fileId, b.contentType]);
+    res.json(rows[0]);
   }));
   api.delete('/talko/transactions/:id', h(async (req, res) => {
     const clientId = typeof req.query.clientId === 'string' ? req.query.clientId.slice(0, 80) : undefined;

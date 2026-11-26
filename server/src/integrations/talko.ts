@@ -313,13 +313,24 @@ export async function addTransaction(userId: string, input: TalkoTxInput, confir
 }
 
 /** Change comment and/or date of a TALKO operation. The user's ✓ in the app is the confirmation. */
-export async function editTransaction(userId: string, id: string, input: { description?: string; date?: string }) {
-  const base: Json = { transactionId: id, ...(input.description !== undefined ? { description: input.description || '—' } : {}), ...(input.date ? { date: input.date.slice(0, 10) } : {}) };
+export async function editTransaction(userId: string, id: string, input: { description?: string; date?: string; categoryId?: string; amount?: string }) {
+  const base: Json = { transactionId: id, ...(input.description !== undefined ? { description: input.description || '—' } : {}), ...(input.date ? { date: input.date.slice(0, 10) } : {}),
+    ...(input.categoryId ? { categoryId: input.categoryId } : {}), ...(input.amount ? { amount: Number(input.amount) } : {}) };
+  if (Object.keys(base).length === 1) return { status: 'saved' as const, result: null };
   let r = await talko(userId, 'talko_edit_transaction', base);
   const token = confirmationOf(r);
   if (token) r = await talko(userId, 'talko_edit_transaction', { ...base, confirmationToken: token, confirmationReason: 'Підтверджено в застосунку «Гроші ОК»' });
   if (stillNeedsConfirmation(r)) throw new IntegrationError('TALKO не підтвердив зміну');
   return { status: 'saved' as const, result: r };
+}
+
+/** Store a photo/scan in TALKO's file storage; returns its link. */
+export async function uploadFile(userId: string, input: { name: string; contentType: string; data: string }) {
+  const r = await talko(userId, 'talko_upload_file', { content: input.data, name: input.name, contentType: input.contentType });
+  const url = r.url ?? r.file?.url ?? r.downloadUrl ?? null;
+  const fileId = r.fileId ?? r.file?.id ?? r.id ?? null;
+  if (!url) throw new IntegrationError('TALKO не прийняв файл' + (typeof r.message === 'string' ? ': ' + r.message.slice(0, 120) : ''));
+  return { url: String(url), fileId: fileId ? String(fileId) : null };
 }
 
 /** Soft-delete a TALKO operation (balance is rolled back). The swipe + 🗑 tap in the app is the user's confirmation. */

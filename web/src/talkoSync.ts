@@ -12,8 +12,9 @@ export interface TxItem {
 export type Op =
   | { id: string; kind: 'add'; tmpId: string; at: string; tries: number; body: { type: 'income' | 'expense'; amount: string; accountId: string; categoryId: string; projectId: string | null; description: string; date: string }; item: TxItem }
   | { id: string; kind: 'delete'; txId: string; at: string; tries: number; item: TxItem }
-  | { id: string; kind: 'edit'; txId: string; at: string; tries: number; body: { description?: string; date?: string } }
+  | { id: string; kind: 'edit'; txId: string; at: string; tries: number; body: EditBody; prev?: { amount: string; type: 'income' | 'expense'; accountId: string }; categoryName?: string }
   | { id: string; kind: 'transfer'; at: string; tries: number; body: { fromAccountId: string; toAccountId: string; amount: string; amountTo?: string; description?: string; date?: string }; fromCurrency: string; toCurrency: string };
+export interface EditBody { description?: string; date?: string; categoryId?: string; amount?: string; time?: string; day?: string }
 export type SyncEvent =
   | { type: 'done'; op: Op; realId?: string }
   | { type: 'failed'; op: Op; message: string }
@@ -45,6 +46,13 @@ export function enqueue(op: Op) {
     if (add && op.kind === 'edit') {
       if (op.body.description !== undefined) { add.body.description = op.body.description; add.item = { ...add.item, comment: op.body.description }; }
       if (op.body.date) { add.body.date = op.body.date; add.item = { ...add.item, localDate: op.body.date }; }
+      if (op.body.categoryId) { add.body.categoryId = op.body.categoryId; add.item = { ...add.item, categoryName: op.categoryName ?? add.item.categoryName }; }
+      if (op.body.amount) { add.body.amount = op.body.amount; add.item = { ...add.item, amount: op.body.amount }; }
+      if (op.body.time) {
+        add.item = { ...add.item, time: op.body.time };
+        const [y, mo, d] = (add.body.date || add.item.localDate).split('-').map(Number); const [h, mi] = op.body.time.split(':').map(Number);
+        add.at = new Date(y, mo - 1, d, h, mi).toISOString();
+      }
       save(); emit({ type: 'change' }); return;
     }
   }

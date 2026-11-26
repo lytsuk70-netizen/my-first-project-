@@ -17,7 +17,7 @@ import type { Draft } from '../../../server/src/engine/parser';
 
 interface TAccount { id: string; name: string; type: string; currency: string; balance: string }
 interface TCategory { id: string; name: string; type: 'income' | 'expense'; parentId: string | null }
-interface TTx { id: string; type: 'income' | 'expense'; amount: string; currency: string; accountId: string; categoryName: string | null; comment: string; counterparty: string; occurredAt: string; localDate: string; time?: string | null }
+interface TTx { id: string; type: 'income' | 'expense'; amount: string; currency: string; accountId: string; categoryId?: string | null; categoryName: string | null; projectId?: string | null; comment: string; counterparty: string; occurredAt: string; localDate: string; time?: string | null; files?: number }
 type Tab = 'expense' | 'income' | 'accounts' | 'feed' | 'menu';
 
 interface Ctx {
@@ -37,6 +37,7 @@ function opDeltas(op: Op): Array<[string, number]> {
   if (op.kind === 'add') return [[op.item.accountId, (op.item.type === 'expense' ? -1 : 1) * Number(op.item.amount)]];
   if (op.kind === 'delete') return [[op.item.accountId, (op.item.type === 'expense' ? 1 : -1) * Number(op.item.amount)]];
   if (op.kind === 'transfer') return [[op.body.fromAccountId, -Number(op.body.amount)], [op.body.toAccountId, Number(op.body.amountTo ?? op.body.amount)]];
+  if (op.kind === 'edit' && op.body.amount && op.prev) return [[op.prev.accountId, (op.prev.type === 'expense' ? -1 : 1) * (Number(op.body.amount) - Number(op.prev.amount))]];
   return [];
 }
 function applyDeltas(accounts: TAccount[], deltas: Array<[string, number]>) {
@@ -268,6 +269,11 @@ function evalExpr(expr: string): string | null {
 }
 
 const PAGE = 4;
+/** A queued change laid over an entry, so the screen shows it before TALKO has it. */
+function applyEdit(x: TTx, o: Extract<Op, { kind: 'edit' }>): TTx {
+  return { ...x, ...(o.body.description !== undefined ? { comment: o.body.description } : {}), ...(o.body.date ? { localDate: o.body.date } : {}),
+    ...(o.body.categoryId ? { categoryId: o.body.categoryId, categoryName: o.categoryName ?? x.categoryName } : {}), ...(o.body.amount ? { amount: o.body.amount } : {}), ...(o.body.time ? { time: o.body.time } : {}) };
+}
 /** YYYY-MM-DD of today + offset days, in the phone's time zone. */
 function isoDay(offset = 0) { const d = new Date(); d.setDate(d.getDate() + offset); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
 function sumByCurrency(list: TTx[]) {
@@ -290,6 +296,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
   const [sel, setSel] = useState<string | null>(null);
   const [hist, setHist] = useState(false);
   const [accPick, setAccPick] = useState(false);
+  const [openTx, setOpenTx] = useState<TTx | null>(null);
   const voiceComment = useRef('');
   const [edit, setEdit] = useState<{ id: string; kind: 'comment' | 'date'; value: string } | null>(null);
   useEffect(() => { if (accounts.length && !accounts.some((a) => a.id === accountId)) setAccountId(accounts[0].id); }, [accounts, accountId]);
@@ -323,7 +330,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
     ...outbox.flatMap((o) => o.kind === 'add' && o.item.type === type ? [{ ...o.item, id: o.tmpId }] : []),
     ...base,
   ].filter((x) => !deleting.has(x.id))
-    .map((x) => editsOf(x.id).reduce((a, o) => ({ ...a, ...(o.body.description !== undefined ? { comment: o.body.description } : {}), ...(o.body.date ? { localDate: o.body.date } : {}) }), x))
+    .map((x) => editsOf(x.id).reduce((a, o) => applyEdit(a, o), x))
     .filter((x) => x.localDate >= isoDay(-1))
     .sort((a, b) => String(b.localDate).localeCompare(String(a.localDate)) || String(b.time ?? '').localeCompare(String(a.time ?? '')));
   const exp = type === 'expense';
@@ -455,7 +462,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
           </div>
         ) : (
           <div>
-          <TxList items={items} compact dayHeads selected={sel} pending={pendingIds} onSelect={(id) => setSel(sel === id ? null : id)}
+          <TxList items={items} compact dayHeads selected={sel} pending={pendingIds} onSelect={(id) => { setSel(id); const it = items.find((x) => x.id === id); if (it) setOpenTx(it); }}
             onYesterday={(i) => {
               const d = new Date(); d.setDate(d.getDate() - 1);
               moveDate(i, `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
@@ -465,10 +472,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
               if (sel === i.id) setSel(null);
               enqueue({ id: SY.uid(), kind: 'delete', txId: i.id, at: new Date().toISOString(), tries: 0, item: i });
             }}
-            actions={(i) => (<>
-              <button onClick={() => setEdit({ id: i.id, kind: 'comment', value: cleanComment(i.comment, i.categoryName, accounts.find((a) => a.id === i.accountId)?.name) })} aria-label="Коментар">✎<span>Коментар</span></button>
-              <button onClick={() => setEdit({ id: i.id, kind: 'date', value: i.localDate ?? todayISO() })} aria-label="Дата">📅<span>Дата</span></button>
-            </>)} />
+            />
           <button className="m-histlink" onClick={() => setHist(true)}>Історія</button>
           </div>
         )}
@@ -496,6 +500,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
       {open && <TxSheet type={type} amount={amount.replace(',', '.')} accountId={accountId} categoryId={open} onClose={() => { setOpen(null); setExpr(''); setFolder(null); }} />}
       {voice && <TVoice defaultType={type} onClose={() => setVoice(false)} onDraft={fromVoice} />}
       {hist && <THistory type={type} onClose={() => setHist(false)} />}
+      {openTx && <TEditTx tx={items.find((x) => x.id === openTx.id) ?? openTx} onClose={() => setOpenTx(null)} />}
       {accPick && <div className="m-hist"><AccountPicker title="Рахунки" value={accountId} onPick={(id) => { setAccountId(id); try { localStorage.setItem('gok.talko.acc.' + type, id); } catch { /* ignore */ } }} onClose={() => setAccPick(false)} /></div>}
       {edit && (
         <div className="m-modal" onClick={() => setEdit(null)}>
@@ -643,7 +648,7 @@ function TxList({ items, compact, dayHeads, selected, onSelect, actions, onDelet
                 )}
                 <span className="ic">{catIcon(i.categoryName ?? '')}</span>
                 <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{(() => { const c = cleanComment(i.comment, i.categoryName, accounts.find((a) => a.id === i.accountId)?.name); return c && i.categoryName ? <div className="t3">{c}</div> : null; })()}</div>
-                <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{pending?.has(i.id) && <span className="m-pend" title="Ще не в TALKO">⟳ </span>}{i.time ?? ''}</small></div>
+                <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{pending?.has(i.id) && <span className="m-pend" title="Ще не в TALKO">⟳ </span>}{(i.files ?? 0) > 0 && <span title="Є фото або документ">📎 </span>}{i.time ?? ''}</small></div>
                 {selected === i.id && actions && <div className="m-actions" onClick={(e) => e.stopPropagation()}>{actions(i)}</div>}
                 {swiped === i.id && onDelete && (
                   <button className="m-trash" aria-label="Видалити" disabled={deleting === i.id}
@@ -851,6 +856,151 @@ function TTransfer({ onClose, draft }: { onClose: () => void; draft?: { fromAcco
 
 // ---------- feed ----------
 
+// ---------- one entry, full screen (like «Деньги ОК» → Редагування) ----------
+
+/** Photos are shrunk on the phone before upload (long side 1600 px, JPEG) — a 5 MB photo becomes ~300 KB. */
+async function fileToUpload(f: File): Promise<{ name: string; contentType: string; data: string }> {
+  const toB64 = (b: Blob) => new Promise<string>((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1] ?? ''); r.onerror = () => bad(r.error); r.readAsDataURL(b); });
+  if (f.type.startsWith('image/') && !/gif|svg/.test(f.type)) {
+    try {
+      const bmp = await createImageBitmap(f);
+      const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height);
+      const blob = await new Promise<Blob | null>((ok) => c.toBlob(ok, 'image/jpeg', 0.82));
+      if (blob) return { name: (f.name || 'photo').replace(/\.\w+$/, '') + '.jpg', contentType: 'image/jpeg', data: await toB64(blob) };
+    } catch { /* HEIC the browser cannot read: send as is */ }
+  }
+  if (f.size > 10 * 1024 * 1024) throw new Error('Файл більший за 10 МБ');
+  return { name: f.name || 'document', contentType: f.type || 'application/octet-stream', data: await toB64(f) };
+}
+
+interface TFile { id: number; name: string; url: string; contentType: string }
+
+function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
+  const { accounts, categories, enqueue, toast } = useTalko();
+  const [mode, setMode] = useState<null | 'account' | 'category' | 'amount' | 'date' | 'time' | 'comment'>(null);
+  const [val, setVal] = useState('');
+  const [files, setFiles] = useState<TFile[] | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [askDelete, setAskDelete] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const pending = tx.id.startsWith('tmp-');
+  const acc = accounts.find((a) => a.id === tx.accountId);
+  const exp = tx.type === 'expense';
+  useEffect(() => {
+    if (pending) { setFiles([]); return; }
+    let alive = true;
+    get('/talko/transactions/' + encodeURIComponent(tx.id) + '/files').then((r) => alive && setFiles(r)).catch(() => alive && setFiles([]));
+    return () => { alive = false; };
+  }, [tx.id, pending]);
+  const edit = (body: SY.EditBody, extra?: { categoryName?: string }) => enqueue({ id: SY.uid(), kind: 'edit', txId: tx.id, at: new Date().toISOString(), tries: 0, body,
+    prev: { amount: tx.amount, type: tx.type, accountId: tx.accountId }, ...(extra ?? {}) });
+  function moveAccount(accountId: string) {
+    const a = accounts.find((x) => x.id === accountId);
+    if (!a || accountId === tx.accountId) return;
+    if (a.currency !== tx.currency) { toast('Інша валюта рахунку — оберіть рахунок у ' + tx.currency, true); return; }
+    if (!tx.categoryId && !pending) { toast('Не вдалося визначити статтю — оновіть список і спробуйте ще', true); return; }
+    // TALKO cannot move an operation between accounts: the old one is removed and the same one is written on the new account
+    const now = new Date();
+    const [y, mo, d] = tx.localDate.split('-').map(Number); const [h, mi] = (tx.time ?? now.toTimeString().slice(0, 5)).split(':').map(Number);
+    const at = new Date(y, mo - 1, d, h, mi).toISOString();
+    const tmpId = 'tmp-' + SY.uid();
+    enqueue({ id: SY.uid(), kind: 'delete', txId: tx.id, at: now.toISOString(), tries: 0, item: tx });
+    enqueue({ id: SY.uid(), kind: 'add', tmpId, at, tries: 0,
+      body: { type: tx.type, amount: tx.amount, accountId, categoryId: tx.categoryId ?? '', projectId: tx.projectId ?? null, description: tx.comment === '—' ? '' : tx.comment, date: tx.localDate },
+      item: { ...tx, id: tmpId, accountId, currency: a.currency } });
+    toast(`Перенесено на ${a.name}`); onClose();
+  }
+  function save() {
+    const v = val.trim();
+    if (mode === 'amount') { const n = normalizeAmountInput(v); if (!(Number(n) > 0)) { toast('Невірна сума', true); return; } if (n !== tx.amount) edit({ amount: n }); }
+    if (mode === 'date' && v && v !== tx.localDate) edit({ date: v });
+    if (mode === 'time' && /^\d{2}:\d{2}$/.test(v)) {
+      // a bank time written in the comment would win, so it is changed there too
+      const re = new RegExp(TIME_RE);
+      edit(re.test(tx.comment ?? '') ? { time: v, day: tx.localDate, description: (tx.comment ?? '').replace(re, v) } : { time: v, day: tx.localDate });
+    }
+    if (mode === 'comment') {
+      const re = new RegExp(TIME_RE);
+      const keep = !!tx.time && re.test(tx.comment ?? '') && !re.test(v);
+      edit({ description: keep ? `${v} (${tx.time})`.trim() : v });
+    }
+    setMode(null);
+  }
+  async function addFile(f: File | undefined) {
+    if (!f) return;
+    if (pending) { toast('Зачекайте кілька секунд — витрата ще записується в TALKO', true); return; }
+    setUploading(true);
+    try {
+      const body = await fileToUpload(f);
+      const r = await post('/talko/transactions/' + encodeURIComponent(tx.id) + '/files', body);
+      setFiles((x) => [...(x ?? []), r]); toast('Файл додано');
+    } catch (e: any) { toast('Файл не додано: ' + (e?.message ?? 'помилка'), true); }
+    finally { setUploading(false); if (fileRef.current) fileRef.current.value = ''; }
+  }
+  const cats = categories.filter((c) => c.type === tx.type);
+  const mine = mainCategories(categories, tx.type);
+  const mineIds = new Set(mine.map((c) => c.id));
+  const catList = [...mine, ...cats.filter((c) => c.parentId && mineIds.has(c.parentId) && !mineIds.has(c.id))];
+  if (mode === 'account') return <ListPicker title="Рахунок" value={tx.accountId} onClose={() => setMode(null)}
+    items={accounts.map((a) => ({ id: a.id, label: a.name, sub: money(a.balance, a.currency) }))} onPick={moveAccount} />;
+  if (mode === 'category') return <ListPicker title="Стаття" value={tx.categoryId ?? ''} onClose={() => setMode(null)}
+    items={catList.map((c) => ({ id: c.id, label: c.name }))} onPick={(id) => { if (id !== tx.categoryId) edit({ categoryId: id }, { categoryName: categories.find((c) => c.id === id)?.name }); }} />;
+  const comment = cleanComment(tx.comment, tx.categoryName, acc?.name);
+  const row = (label: string, value: React.ReactNode, onClick?: () => void) => (
+    <button className="m-erow" onClick={onClick} disabled={!onClick}><span>{label}</span><span className="m-eval">{value} {onClick && '›'}</span></button>
+  );
+  return (
+    <div className="m-hist">
+      <div className="m-picker-top"><button onClick={onClose} aria-label="Назад">‹</button><b>Редагування</b><span /></div>
+      <div className="m-histbody">
+        <div className="m-egroup">
+          {row('Рахунок', acc?.name ?? '—', () => setMode('account'))}
+          {row('Стаття', tx.categoryName ?? '—', () => setMode('category'))}
+          {row('Сума', <b className={exp ? 'c-expense' : 'c-income'}>{money(tx.amount, tx.currency)}</b>, () => { setVal(tx.amount); setMode('amount'); })}
+          {row('Дата', fmtDayLong(tx.localDate), () => { setVal(tx.localDate); setMode('date'); })}
+          {row('Час', tx.time ?? '—', () => { setVal(tx.time ?? new Date().toTimeString().slice(0, 5)); setMode('time'); })}
+          {row('Коментар', <span className="m-ecomment">{comment || ''}</span>, () => { setVal(comment); setMode('comment'); })}
+        </div>
+        {pending && <div className="m-day">⟳ Ще записується в TALKO — зміни підуть услід</div>}
+        <div className="m-egroup">
+          {(files ?? []).map((f) => (
+            <a key={f.id} className="m-efile" href={f.url} target="_blank" rel="noreferrer">
+              {f.contentType.startsWith('image/') ? <img src={f.url} alt="" /> : <span className="m-edoc">📄</span>}
+              <span className="ellipsis">{f.name}</span>
+            </a>
+          ))}
+          <button className="m-erow m-eadd" disabled={uploading} onClick={() => fileRef.current?.click()}>{uploading ? 'Завантажую…' : '📷 Додати фото або файл'}</button>
+          <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf,.heic,.doc,.docx,.xls,.xlsx" hidden onChange={(e) => addFile(e.target.files?.[0])} />
+        </div>
+        <div className="m-egroup">
+          {askDelete
+            ? <div className="m-edel"><span>Видалити {money(tx.amount, tx.currency)}?</span><button onClick={() => setAskDelete(false)}>Ні</button>
+                <button className="danger" onClick={() => { enqueue({ id: SY.uid(), kind: 'delete', txId: tx.id, at: new Date().toISOString(), tries: 0, item: tx }); toast('Видалено'); onClose(); }}>Так, видалити</button></div>
+            : <button className="m-erow m-edanger" onClick={() => setAskDelete(true)}>{exp ? 'Видалити витрату…' : 'Видалити дохід…'}</button>}
+        </div>
+      </div>
+      {mode && (
+        <div className="m-modal" onClick={() => setMode(null)}>
+          <div className="m-modal-box" onClick={(e) => e.stopPropagation()}>
+            {mode === 'comment' && <div className="m-micwrap"><textarea className="input" rows={4} placeholder="Коментар — надиктуйте або напишіть" value={val} maxLength={500} onChange={(e) => setVal(e.target.value)} /><MicButton value={val} onChange={(v) => setVal(v.slice(0, 500))} /></div>}
+            {mode === 'amount' && <input autoFocus className="input num" inputMode="decimal" value={val} onChange={(e) => setVal(e.target.value.replace(/[^\d.,]/g, ''))} style={{ fontSize: 24 }} />}
+            {mode === 'date' && <input autoFocus className="input" type="date" value={val} max={todayISO()} onChange={(e) => setVal(e.target.value)} />}
+            {mode === 'time' && <input autoFocus className="input" type="time" value={val} onChange={(e) => setVal(e.target.value)} />}
+            <div className="m-modal-btns">
+              {mode === 'comment' && <button onClick={() => setVal('')}>Очистити</button>}
+              <button onClick={() => setMode(null)} aria-label="Скасувати">✕</button>
+              <button className="ok" onClick={save} aria-label="Зберегти">✓</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+const fmtDayLong = (d: string) => { const [y, m, dd] = d.split('-').map(Number); return new Date(y, m - 1, dd).toLocaleDateString('uk-UA', { day: 'numeric', month: 'long', ...(y !== new Date().getFullYear() ? { year: 'numeric' } : {}) }); };
+
 // ---------- history (like «Деньги ОК»: month / year, by account, by category) ----------
 
 type Period = { kind: 'month'; ym: string } | { kind: 'year'; y: string };
@@ -891,6 +1041,7 @@ function THistory({ type, onClose }: { type: 'income' | 'expense'; onClose: () =
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState(false);
   const [pick, setPick] = useState<null | 'period' | 'account' | 'category'>(null);
+  const [openTx, setOpenTx] = useState<TTx | null>(null);
   useEffect(() => { const h = setTimeout(() => setQuery(q.trim()), 400); return () => clearTimeout(h); }, [q]);
   const [from, to] = periodRange(period);
   const key = `gok.hist.${type}.${from}.${to}.${accountId}.${categoryId}.${query}`;
@@ -906,7 +1057,8 @@ function THistory({ type, onClose }: { type: 'income' | 'expense'; onClose: () =
     return () => { alive = false; };
   }, [key, version]); // eslint-disable-line react-hooks/exhaustive-deps
   const deleting = new Set<string>(outbox.flatMap((o) => o.kind === 'delete' ? [o.txId] : []));
-  const shown = (items ?? []).filter((x) => !deleting.has(x.id));
+  const edits = outbox.filter((o): o is Extract<Op, { kind: 'edit' }> => o.kind === 'edit');
+  const shown = (items ?? []).filter((x) => !deleting.has(x.id)).map((x) => edits.filter((o) => o.txId === x.id).reduce((a, o) => applyEdit(a, o), x));
   const acc = accounts.find((a) => a.id === accountId);
   const cat = categories.find((c) => c.id === categoryId);
   const total = sumByCurrency(shown) || money('0', acc?.currency ?? 'UAH');
@@ -937,9 +1089,10 @@ function THistory({ type, onClose }: { type: 'income' | 'expense'; onClose: () =
         <button className="m-accrow" onClick={() => setPick('category')}><span className="ellipsis">{cat?.name ?? 'Усі статті'}</span><span>›</span></button>
       </div>
       <div className="m-day">{type === 'expense' ? 'Витрачено' : 'Отримано'} за період: <b className="num">{total}</b>{loading && ' · оновлюю…'}</div>
+      {openTx && <TEditTx tx={shown.find((x) => x.id === openTx.id) ?? openTx} onClose={() => setOpenTx(null)} />}
       <div className="m-histbody">
         {items === null && loading ? <div className="empty">Завантаження…</div> : (
-          <TxList items={shown}
+          <TxList items={shown} onSelect={(id) => { const it = shown.find((x) => x.id === id); if (it) setOpenTx(it); }}
             onDelete={async (i) => { enqueue({ id: SY.uid(), kind: 'delete', txId: i.id, at: new Date().toISOString(), tries: 0, item: i }); }} />
         )}
       </div>
