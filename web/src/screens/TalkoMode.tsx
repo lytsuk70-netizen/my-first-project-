@@ -501,7 +501,7 @@ function TEntry({ type }: { type: 'income' | 'expense' }) {
       {open && <TxSheet type={type} amount={amount.replace(',', '.')} accountId={accountId} categoryId={open} onClose={() => { setOpen(null); setExpr(''); setFolder(null); }} />}
       {voice && <TVoice defaultType={type} onClose={() => setVoice(false)} onDraft={fromVoice} />}
       {hist && <THistory type={type} onClose={() => setHist(false)} />}
-      {openTx && <TEditTx tx={items.find((x) => x.id === openTx.id) ?? openTx} onClose={() => setOpenTx(null)} />}
+      {openTx && <TEditTx tx={items.find((x) => x.id === openTx.id || x.id === SY.realIdOf(openTx.id)) ?? openTx} onClose={() => setOpenTx(null)} />}
       {accPick && <div className="m-hist"><AccountPicker title="Рахунки" value={accountId} onPick={(id) => { setAccountId(id); try { localStorage.setItem('gok.talko.acc.' + type, id); } catch { /* ignore */ } }} onClose={() => setAccPick(false)} /></div>}
       {edit && (
         <div className="m-modal" onClick={() => setEdit(null)}>
@@ -889,13 +889,13 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
   const camRef = useRef<HTMLInputElement>(null);
   const [scan, setScan] = useState<ScanPage[] | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
-  const pending = tx.id.startsWith('tmp-');
+  const pending = tx.id.startsWith('tmp-') && SY.realIdOf(tx.id) === tx.id;
   const acc = accounts.find((a) => a.id === tx.accountId);
   const exp = tx.type === 'expense';
   useEffect(() => {
     if (pending) { setFiles([]); return; }
     let alive = true;
-    get('/talko/transactions/' + encodeURIComponent(tx.id) + '/files').then((r) => alive && setFiles(r)).catch(() => alive && setFiles([]));
+    get('/talko/transactions/' + encodeURIComponent(SY.realIdOf(tx.id)) + '/files').then((r) => alive && setFiles(r)).catch(() => alive && setFiles([]));
     return () => { alive = false; };
   }, [tx.id, pending]);
   const edit = (body: SY.EditBody, extra?: { categoryName?: string }) => enqueue({ id: SY.uid(), kind: 'edit', txId: tx.id, at: new Date().toISOString(), tries: 0, body,
@@ -953,7 +953,7 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
     if (pending) { toast('Зачекайте кілька секунд — витрата ще записується в TALKO', true); return; }
     setUploading(true);
     try {
-      const r = await post('/talko/transactions/' + encodeURIComponent(tx.id) + '/files', body);
+      const r = await post('/talko/transactions/' + encodeURIComponent(SY.realIdOf(tx.id)) + '/files', body);
       setFiles((x) => [...(x ?? []), r]); toast('Файл додано');
     } catch (e: any) { toast('Файл не додано: ' + (e?.message ?? 'помилка'), true); }
     finally { setUploading(false); }
@@ -964,7 +964,7 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
     setUploading(true);
     try {
       const body = await fileToUpload(f);
-      const r = await post('/talko/transactions/' + encodeURIComponent(tx.id) + '/files', body);
+      const r = await post('/talko/transactions/' + encodeURIComponent(SY.realIdOf(tx.id)) + '/files', body);
       setFiles((x) => [...(x ?? []), r]); toast('Файл додано');
     } catch (e: any) { toast('Файл не додано: ' + (e?.message ?? 'помилка'), true); }
     finally { setUploading(false); if (fileRef.current) fileRef.current.value = ''; }

@@ -309,7 +309,33 @@ export async function addTransaction(userId: string, input: TalkoTxInput, confir
   const r = await talko(userId, 'talko_add_transaction', args);
   const token = confirmationOf(r);
   if (!confirmationToken && token) return { status: 'needs_confirmation' as const, confirmationToken: token, preview: r.preview ?? r.message ?? r.summary ?? null };
-  return { status: 'saved' as const, id: r.id ?? r.transactionId ?? r.transaction?.id ?? null, result: r };
+  let id: string | null = r.id ?? r.transactionId ?? r.transaction?.id ?? findId(r);
+  // TALKO did not say the new id: find the operation just written (same day, account, category, amount, comment)
+  if (!id) id = await findNewTransaction(userId, input).catch(() => null);
+  return { status: 'saved' as const, id, result: r };
+}
+
+/** Look for a TALKO document id in an answer of any shape (nested JSON or text). */
+function findId(r: Json): string | null {
+  const seen = new Set<unknown>();
+  const walk = (v: unknown): string | null => {
+    if (!v || typeof v !== 'object' || seen.has(v)) return null;
+    seen.add(v);
+    for (const [k, x] of Object.entries(v as Json)) {
+      if (/^(id|transactionId|txId|docId)$/i.test(k) && typeof x === 'string' && /^[A-Za-z0-9_-]{15,40}$/.test(x)) return x;
+    }
+    for (const x of Object.values(v as Json)) { const f = walk(x); if (f) return f; }
+    return null;
+  };
+  return walk(r) ?? (typeof r.message === 'string' ? r.message.match(/(?:transactionId|ID)[\s:="']+([A-Za-z0-9_-]{15,40})/)?.[1] ?? null : null);
+}
+
+async function findNewTransaction(userId: string, input: TalkoTxInput): Promise<string | null> {
+  const day = (input.date ?? new Date().toISOString()).slice(0, 10);
+  const r = await talko(userId, 'talko_list_finance_transactions', { dateFrom: day, dateTo: day, accountId: input.accountId, categoryId: input.categoryId, type: input.type, limit: 200 });
+  const desc = input.description || '—';
+  const hits = ((r.transactions ?? []) as Json[]).filter((t) => Number(t.amount) === Number(input.amount) && String(t.categoryId) === input.categoryId && String(t.description ?? '') === desc);
+  return hits.length ? String(hits[hits.length - 1].id) : null; // newest document wins
 }
 
 /** Change comment and/or date of a TALKO operation. The user's ✓ in the app is the confirmation. */

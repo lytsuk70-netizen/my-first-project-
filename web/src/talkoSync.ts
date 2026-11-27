@@ -27,6 +27,9 @@ let inflight: string | null = null;
 let timer: number | undefined;
 let lastError: string | null = null;
 const listeners = new Set<(e: SyncEvent) => void>();
+// entries that were written to TALKO: temporary id on the phone → TALKO id (so later edits reach the right entry)
+const realIds: Record<string, string> = (() => { try { return JSON.parse(localStorage.getItem('gok.realIds') ?? '{}'); } catch { return {}; } })();
+export const realIdOf = (id: string) => realIds[id] ?? id;
 
 function load(): Op[] { try { return JSON.parse(localStorage.getItem(KEY) ?? '[]'); } catch { return []; } }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(queue)); } catch { /* storage full: keep in memory */ } }
@@ -39,6 +42,7 @@ export function isInflight(id: string) { return inflight === id; }
 export function subscribe(fn: (e: SyncEvent) => void) { listeners.add(fn); return () => { listeners.delete(fn); }; }
 
 export function enqueue(op: Op) {
+  if ('txId' in op) op = { ...op, txId: realIdOf(op.txId) } as Op;
   // changing an entry that is not in TALKO yet: fold the change into its pending «add»
   if (op.kind === 'delete' || op.kind === 'edit') {
     const add = queue.find((o) => o.kind === 'add' && o.tmpId === op.txId && o.id !== inflight) as Extract<Op, { kind: 'add' }> | undefined;
@@ -88,12 +92,20 @@ async function run() {
     while (queue.length) {
       const op = queue[0];
       // an edit/delete of an entry whose «add» failed and was dropped has nothing to change
-      if ('txId' in op && op.txId.startsWith('tmp-')) { queue = queue.slice(1); save(); emit({ type: 'change' }); continue; }
+      if ('txId' in op && op.txId.startsWith('tmp-')) {
+        const real = realIdOf(op.txId);
+        if (real !== op.txId) { queue[0] = { ...op, txId: real } as Op; save(); continue; }
+        queue = queue.slice(1); save(); emit({ type: 'failed', op, message: 'запис не знайдено в TALKO' }); emit({ type: 'change' }); continue;
+      }
       inflight = op.id; emit({ type: 'change' });
       try {
         const realId = await send(op);
         queue = queue.slice(1);
-        if (op.kind === 'add' && realId) queue = queue.map((o) => ('txId' in o && o.txId === op.tmpId ? { ...o, txId: realId } : o));
+        if (op.kind === 'add' && realId) {
+          queue = queue.map((o) => ('txId' in o && o.txId === op.tmpId ? { ...o, txId: realId } : o));
+          realIds[op.tmpId] = realId;
+          try { localStorage.setItem('gok.realIds', JSON.stringify(Object.fromEntries(Object.entries(realIds).slice(-200)))); } catch { /* ignore */ }
+        }
         lastError = null; save(); inflight = null;
         emit({ type: 'done', op, realId });
         emit({ type: 'change' });
