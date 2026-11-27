@@ -3,7 +3,7 @@
  * TALKO and every new operation is written to TALKO (with TALKO's own confirmation step).
  */
 import type React from 'react';
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { api, del, get, post, qs } from '../api';
 import { Bars, Donut } from '../components/Charts';
 import { ErrorBox, Field, Icons, Sheet, fmtDay } from '../components/ui';
@@ -11,7 +11,7 @@ import { useT } from '../i18n';
 import { money, normalizeAmountInput, todayISO } from '../money';
 import * as FQ from '../fileQueue';
 import * as SY from '../talkoSync';
-import { photoToPage, pagesToPdf, bytesToBase64, type ScanPage } from '../scan';
+import { loadPhoto, detectCorners, cropToPage, pagesToPdf, bytesToBase64, type ScanPage, type Pt } from '../scan';
 import type { Op } from '../talkoSync';
 // the same voice parser as the server, run on the phone: no waiting for the server or TALKO
 import { interpret } from '../../../server/src/engine/commands';
@@ -879,6 +879,69 @@ async function fileToUpload(f: File): Promise<{ name: string; contentType: strin
 
 interface TFile { id: number; name: string; url: string; contentType: string }
 
+/** Crop like a scanner app: drag the 4 corners onto the edges of the sheet; the page is straightened after. */
+function CropEditor({ src, corners, onDone, onCancel, onRetake }: { src: HTMLCanvasElement; corners: Pt[]; onDone: (c: Pt[]) => void; onCancel: () => void; onRetake?: () => void }) {
+  const [pts, setPts] = useState<Pt[]>(corners);
+  const url = useMemo(() => src.toDataURL('image/jpeg', 0.85), [src]);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  const drag = useRef<{ i: number; dx: number; dy: number } | null>(null);
+  useEffect(() => {
+    const el = boxRef.current; if (!el) return;
+    const fit = () => {
+      const k = Math.min((el.clientWidth - 32) / src.width, (el.clientHeight - 32) / src.height);
+      setBox({ w: src.width * k, h: src.height * k });
+    };
+    fit(); window.addEventListener('resize', fit); return () => window.removeEventListener('resize', fit);
+  }, [src]);
+  const k = box.w ? box.w / src.width : 0;
+  const svgRef = useRef<SVGSVGElement>(null);
+  const toImg = (e: React.PointerEvent) => {
+    const r = svgRef.current!.getBoundingClientRect();
+    return { x: (e.clientX - r.left) / k, y: (e.clientY - r.top) / k };
+  };
+  const down = (i: number) => (e: React.PointerEvent<SVGGElement>) => {
+    e.preventDefault(); svgRef.current?.setPointerCapture?.(e.pointerId);
+    const p = toImg(e); drag.current = { i, dx: pts[i].x - p.x, dy: pts[i].y - p.y };
+  };
+  const move = (e: React.PointerEvent) => {
+    const d = drag.current; if (!d) return;
+    const p = toImg(e);
+    const x = Math.min(src.width, Math.max(0, p.x + d.dx)), y = Math.min(src.height, Math.max(0, p.y + d.dy));
+    setPts((a) => a.map((q, j) => (j === d.i ? { x, y } : q)));
+  };
+  const up = () => { drag.current = null; };
+  const poly = pts.map((p) => `${p.x * k},${p.y * k}`).join(' ');
+  const r = 22;
+  return (
+    <div className="m-hist m-crop">
+      <div className="m-picker-top"><button onClick={onCancel} aria-label="Скасувати">‹</button><b>Обрізати</b>
+        <button className="m-crop-reset" onClick={() => setPts([{ x: 0, y: 0 }, { x: src.width, y: 0 }, { x: src.width, y: src.height }, { x: 0, y: src.height }])}>Усе фото</button></div>
+      <div className="m-crop-area" ref={boxRef}>
+        {box.w > 0 && (
+          <div className="m-crop-box" style={{ width: box.w, height: box.h }}>
+            <img src={url} alt="" draggable={false} />
+            <svg ref={svgRef} width={box.w} height={box.h} onPointerMove={move} onPointerUp={up} onPointerCancel={up} style={{ touchAction: 'none' }}>
+              <path d={`M0,0H${box.w}V${box.h}H0Z M${poly.split(' ').join(' L')}Z`} fill="rgba(0,0,0,.55)" fillRule="evenodd" />
+              <polygon points={poly} fill="none" stroke="#2f8bff" strokeWidth={2} />
+              {pts.map((p, i) => (
+                <g key={i} onPointerDown={down(i)}>
+                  <circle cx={p.x * k} cy={p.y * k} r={r} fill="transparent" />
+                  <circle cx={p.x * k} cy={p.y * k} r={11} fill="rgba(47,139,255,.25)" stroke="#2f8bff" strokeWidth={3} />
+                </g>
+              ))}
+            </svg>
+          </div>
+        )}
+      </div>
+      <div className="m-scanbtns">
+        {onRetake ? <button onClick={onRetake}>📷 Перезняти</button> : <button onClick={onCancel}>Скасувати</button>}
+        <button className="ok" onClick={() => onDone(pts)}>Готово</button>
+      </div>
+    </div>
+  );
+}
+
 function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
   const { accounts, categories, enqueue, toast } = useTalko();
   const [mode, setMode] = useState<null | 'account' | 'category' | 'amount' | 'date' | 'time' | 'comment'>(null);
@@ -890,6 +953,7 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
   const camRef = useRef<HTMLInputElement>(null);
   const [scan, setScan] = useState<ScanPage[] | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
+  const [crop, setCrop] = useState<{ src: HTMLCanvasElement; corners: Pt[]; index: number | null } | null>(null);
   const pending = tx.id.startsWith('tmp-') && SY.realIdOf(tx.id) === tx.id;
   const acc = accounts.find((a) => a.id === tx.accountId);
   const exp = tx.type === 'expense';
@@ -943,8 +1007,22 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
     if (camRef.current) camRef.current.value = '';
     if (!f) return;
     setScanBusy(true);
-    try { const pg = await photoToPage(f); setScan((x) => [...(x ?? []), pg]); }
+    try { const src = await loadPhoto(f); setCrop({ src, corners: detectCorners(src), index: null }); }
     catch { toast('Не вдалося обробити фото', true); }
+    finally { setScanBusy(false); }
+  }
+  async function applyCrop(corners: Pt[]) {
+    if (!crop) return;
+    const { src, index } = crop;
+    setCrop(null); setScanBusy(true);
+    try {
+      const pg = await cropToPage(src, corners);
+      setScan((x) => {
+        const arr = [...(x ?? [])];
+        if (index === null) arr.push(pg); else { URL.revokeObjectURL(arr[index].preview); arr[index] = pg; }
+        return arr;
+      });
+    } catch { toast('Не вдалося обробити фото', true); }
     finally { setScanBusy(false); }
   }
   async function saveScan() {
@@ -1029,11 +1107,12 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
           <div className="m-histbody m-scan">
             {scan.map((p, i) => (
               <div key={p.preview} className="m-scanpage">
-                <img src={p.preview} alt={'Сторінка ' + (i + 1)} />
+                <img src={p.preview} alt={'Сторінка ' + (i + 1)} onClick={() => setCrop({ src: p.src, corners: p.corners, index: i })} />
                 <button onClick={() => { URL.revokeObjectURL(p.preview); setScan((x) => (x ?? []).filter((_, k) => k !== i)); }} aria-label="Прибрати сторінку">✕</button>
                 <span>{i + 1}</span>
               </div>
             ))}
+            {scan.length > 0 && !scanBusy && <div className="empty" style={{ padding: 4 }}>Натисніть на сторінку, щоб обрізати ще раз</div>}
             {!scan.length && !scanBusy && <div className="empty">Сфотографуйте документ — сторінка стане чорно-білою, як скан.</div>}
             {scanBusy && <div className="empty">Обробляю сторінку…</div>}
           </div>
@@ -1043,6 +1122,8 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
           </div>
         </div>
       )}
+      {crop && <CropEditor src={crop.src} corners={crop.corners} onCancel={() => setCrop(null)} onDone={applyCrop}
+        onRetake={crop.index === null ? () => { setCrop(null); setTimeout(() => camRef.current?.click(), 50); } : undefined} />}
       {mode && (
         <div className="m-modal" onClick={() => setMode(null)}>
           <div className="m-modal-box" onClick={(e) => e.stopPropagation()}>
