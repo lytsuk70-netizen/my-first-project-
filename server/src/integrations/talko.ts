@@ -350,9 +350,28 @@ export async function editTransaction(userId: string, id: string, input: { descr
   return { status: 'saved' as const, result: r };
 }
 
-/** Store a photo/scan in TALKO's file storage; returns its link. */
+/** Store a photo/scan in TALKO's file storage; returns its link. Big files go in parts (TALKO rejects one large base64 field). */
 export async function uploadFile(userId: string, input: { name: string; contentType: string; data: string }) {
-  const r = await talko(userId, 'talko_upload_file', { content: input.data, name: input.name, contentType: input.contentType });
+  const data = input.data.replace(/^data:[^,]*,/, '').replace(/\s+/g, '');
+  const name = input.name.replace(/[\\/:*?"<>|]+/g, '-').slice(0, 120) || 'file';
+  const CH = 200_000; // base64 chars per part (multiple of 4)
+  let r: Json;
+  if (data.length <= CH) {
+    r = await talko(userId, 'talko_upload_file', { content: data, name, contentType: input.contentType });
+  } else {
+    const total = Math.ceil(data.length / CH);
+    if (total > 400) throw new IntegrationError('Файл завеликий для TALKO', 413);
+    let uploadId: string | undefined;
+    r = {};
+    for (let i = 0; i < total; i++) {
+      const args: Json = { op: 'chunk', chunk: data.slice(i * CH, (i + 1) * CH), chunkIndex: i, totalChunks: total, name, contentType: input.contentType };
+      if (uploadId) args.uploadId = uploadId;
+      r = await talko(userId, 'talko_upload_file', args);
+      uploadId = r.uploadId ?? uploadId;
+      if (!uploadId) throw new IntegrationError('TALKO не прийняв частину файлу' + (typeof r.message === 'string' ? ': ' + r.message.slice(0, 120) : ''));
+    }
+    if (!r.url && uploadId) r = await talko(userId, 'talko_upload_file', { uploadId });
+  }
   const url = r.url ?? r.file?.url ?? r.downloadUrl ?? null;
   const fileId = r.fileId ?? r.file?.id ?? r.id ?? null;
   if (!url) throw new IntegrationError('TALKO не прийняв файл' + (typeof r.message === 'string' ? ': ' + r.message.slice(0, 120) : ''));

@@ -394,11 +394,13 @@ export function createApp() {
     res.json(rows);
   }));
   api.post('/talko/transactions/:id/files', h(async (req, res) => {
-    const b = z.object({ name: text(200).min(1), contentType: text(100), data: z.string().min(10).max(15_000_000) }).parse(req.body);
-    const f = await TK.uploadFile(uid(req), b);
-    const { rows } = await pool.query('INSERT INTO talko_tx_files (user_id, talko_id, name, url, file_id, content_type) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id::int AS id, name, url, content_type AS "contentType"',
-      [uid(req), String(req.params.id), b.name, f.url, f.fileId, b.contentType]);
-    res.json(rows[0]);
+    const b = z.object({ name: text(200).min(1), contentType: text(100), data: z.string().min(10).max(15_000_000), clientId: text(80).optional() }).parse(req.body);
+    res.json(await once(uid(req), b.clientId, async () => {
+      const f = await TK.uploadFile(uid(req), b);
+      const { rows } = await pool.query('INSERT INTO talko_tx_files (user_id, talko_id, name, url, file_id, content_type) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id::int AS id, name, url, content_type AS "contentType"',
+        [uid(req), String(req.params.id), b.name, f.url, f.fileId, b.contentType]);
+      return rows[0];
+    }));
   }));
   api.delete('/talko/transactions/:id', h(async (req, res) => {
     const clientId = typeof req.query.clientId === 'string' ? req.query.clientId.slice(0, 80) : undefined;

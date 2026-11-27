@@ -9,6 +9,7 @@ import { Bars, Donut } from '../components/Charts';
 import { ErrorBox, Field, Icons, Sheet, fmtDay } from '../components/ui';
 import { useT } from '../i18n';
 import { money, normalizeAmountInput, todayISO } from '../money';
+import * as FQ from '../fileQueue';
 import * as SY from '../talkoSync';
 import { photoToPage, pagesToPdf, bytesToBase64, type ScanPage } from '../scan';
 import type { Op } from '../talkoSync';
@@ -649,7 +650,7 @@ function TxList({ items, compact, dayHeads, selected, onSelect, actions, onDelet
                 )}
                 <span className="ic">{catIcon(i.categoryName ?? '')}</span>
                 <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{(() => { const c = cleanComment(i.comment, i.categoryName, accounts.find((a) => a.id === i.accountId)?.name); return c && i.categoryName ? <div className="t3">{c}</div> : null; })()}</div>
-                <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{pending?.has(i.id) && <span className="m-pend" title="Ще не в TALKO">⟳ </span>}{(i.files ?? 0) > 0 && <span title="Є фото або документ">📎 </span>}{i.time ?? ''}</small></div>
+                <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{pending?.has(i.id) && <span className="m-pend" title="Ще не в TALKO">⟳ </span>}{((i.files ?? 0) > 0 || FQ.pendingFor(i.id).length > 0) && <span title="Є фото або документ">📎 </span>}{i.time ?? ''}</small></div>
                 {selected === i.id && actions && <div className="m-actions" onClick={(e) => e.stopPropagation()}>{actions(i)}</div>}
                 {swiped === i.id && onDelete && (
                   <button className="m-trash" aria-label="Видалити" disabled={deleting === i.id}
@@ -892,10 +893,16 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
   const pending = tx.id.startsWith('tmp-') && SY.realIdOf(tx.id) === tx.id;
   const acc = accounts.find((a) => a.id === tx.accountId);
   const exp = tx.type === 'expense';
+  const [queued, setQueued] = useState<FQ.QFile[]>(() => FQ.pendingFor(tx.id));
+  useEffect(() => FQ.subscribe((e) => {
+    setQueued(FQ.pendingFor(tx.id));
+    if (e.type === 'sent' && e.txId === SY.realIdOf(tx.id)) setFiles((x) => (x ?? []).some((f) => f.id === e.result.id) ? x : [...(x ?? []), e.result]);
+    if (e.type === 'failed' && FQ.pendingFor(tx.id).some((f) => f.id === e.file.id)) toast('TALKO не прийняв файл: ' + e.message + ' — він збережений у телефоні', true);
+  }), [tx.id]);
   useEffect(() => {
     if (pending) { setFiles([]); return; }
     let alive = true;
-    get('/talko/transactions/' + encodeURIComponent(SY.realIdOf(tx.id)) + '/files').then((r) => alive && setFiles(r)).catch(() => alive && setFiles([]));
+    get('/talko/transactions/' + encodeURIComponent(SY.realIdOf(tx.id)) + '/files').then((r) => alive && setFiles(r)).catch(() => alive && setFiles((x) => x ?? []));
     return () => { alive = false; };
   }, [tx.id, pending]);
   const edit = (body: SY.EditBody, extra?: { categoryName?: string }) => enqueue({ id: SY.uid(), kind: 'edit', txId: tx.id, at: new Date().toISOString(), tries: 0, body,
@@ -945,29 +952,21 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
     const d = new Date();
     const name = `Скан ${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()} ${d.toTimeString().slice(0, 5).replace(':', '-')}.pdf`;
     const pdf = pagesToPdf(scan);
-    if (pdf.length > 10 * 1024 * 1024) { toast('Забагато сторінок: файл більший за 10 МБ', true); return; }
-    await upload({ name, contentType: 'application/pdf', data: bytesToBase64(pdf) });
-    scan.forEach((p) => URL.revokeObjectURL(p.preview)); setScan(null);
+    if (pdf.length > 15 * 1024 * 1024) { toast('Забагато сторінок: файл більший за 15 МБ', true); return; }
+    if (await keep({ name, contentType: 'application/pdf', data: bytesToBase64(pdf) })) { scan.forEach((p) => URL.revokeObjectURL(p.preview)); setScan(null); }
   }
-  async function upload(body: { name: string; contentType: string; data: string }) {
-    if (pending) { toast('Зачекайте кілька секунд — витрата ще записується в TALKO', true); return; }
+  /** Saved on the phone at once; goes to TALKO in the background. */
+  async function keep(body: { name: string; contentType: string; data: string }) {
     setUploading(true);
-    try {
-      const r = await post('/talko/transactions/' + encodeURIComponent(SY.realIdOf(tx.id)) + '/files', body);
-      setFiles((x) => [...(x ?? []), r]); toast('Файл додано');
-    } catch (e: any) { toast('Файл не додано: ' + (e?.message ?? 'помилка'), true); }
+    try { await FQ.add(tx.id, body); toast(navigator.onLine ? 'Збережено — надсилаю в TALKO' : 'Збережено в телефоні — надішлю, коли з’явиться зв’язок'); return true; }
+    catch { toast('Не вдалося зберегти файл у телефоні — мало місця?', true); return false; }
     finally { setUploading(false); }
   }
   async function addFile(f: File | undefined) {
+    if (fileRef.current) fileRef.current.value = '';
     if (!f) return;
-    if (pending) { toast('Зачекайте кілька секунд — витрата ще записується в TALKO', true); return; }
-    setUploading(true);
-    try {
-      const body = await fileToUpload(f);
-      const r = await post('/talko/transactions/' + encodeURIComponent(SY.realIdOf(tx.id)) + '/files', body);
-      setFiles((x) => [...(x ?? []), r]); toast('Файл додано');
-    } catch (e: any) { toast('Файл не додано: ' + (e?.message ?? 'помилка'), true); }
-    finally { setUploading(false); if (fileRef.current) fileRef.current.value = ''; }
+    try { await keep(await fileToUpload(f)); }
+    catch (e: any) { toast('Файл не додано: ' + (e?.message ?? 'помилка'), true); }
   }
   const cats = categories.filter((c) => c.type === tx.type);
   const mine = mainCategories(categories, tx.type);
@@ -1001,8 +1000,19 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
               <span className="ellipsis">{f.name}</span>
             </a>
           ))}
+          {queued.map((f) => (
+            <div key={f.id} className="m-efile">
+              <button className="m-efile-open" onClick={() => window.open(FQ.previewUrl(f), '_blank')}>
+                {f.contentType.startsWith('image/') ? <img src={'data:' + f.contentType + ';base64,' + f.data} alt="" /> : <span className="m-edoc">📄</span>}
+                <span className="ellipsis">{f.name}</span>
+              </button>
+              {f.error
+                ? <button className="m-efile-st err" onClick={() => FQ.retry(f.id)} title={f.error}>⚠ ще раз</button>
+                : <span className="m-efile-st">⟳</span>}
+            </div>
+          ))}
           <button className="m-erow m-eadd" disabled={uploading} onClick={() => fileRef.current?.click()}>{uploading ? 'Завантажую…' : '📷 Додати фото або файл'}</button>
-          <button className="m-erow m-eadd" disabled={uploading} onClick={() => { if (pending) { toast('Зачекайте кілька секунд — витрата ще записується в TALKO', true); return; } setScan([]); setTimeout(() => camRef.current?.click(), 50); }}>📄 Сканувати документ</button>
+          <button className="m-erow m-eadd" disabled={uploading} onClick={() => { setScan([]); setTimeout(() => camRef.current?.click(), 50); }}>📄 Сканувати документ</button>
           <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf,.heic,.doc,.docx,.xls,.xlsx" hidden onChange={(e) => addFile(e.target.files?.[0])} />
         </div>
         <div className="m-egroup">
