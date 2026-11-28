@@ -952,6 +952,7 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
   const [askDelete, setAskDelete] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const camRef = useRef<HTMLInputElement>(null);
+  const noteRef = useRef<HTMLTextAreaElement>(null);
   const [scan, setScan] = useState<ScanPage[] | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
   const [crop, setCrop] = useState<{ src: HTMLCanvasElement; corners: Pt[]; index: number | null } | null>(null);
@@ -959,6 +960,8 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
   const acc = accounts.find((a) => a.id === tx.accountId);
   const exp = tx.type === 'expense';
   const [queued, setQueued] = useState<FQ.QFile[]>(() => FQ.pendingFor(tx.id));
+  // a just-entered expense opens with the comment field ready to type in
+  useEffect(() => { if (pending && !note) noteRef.current?.focus(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => FQ.subscribe((e) => {
     setQueued(FQ.pendingFor(tx.id));
     if (e.type === 'sent' && e.txId === SY.realIdOf(tx.id)) setFiles((x) => (x ?? []).some((f) => f.id === e.result.id) ? x : [...(x ?? []), e.result]);
@@ -1078,7 +1081,7 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
         <div className="m-egroup m-enote">
           <div className="m-enote-label">Коментар</div>
           <div className="m-micwrap">
-            <textarea className="input" rows={3} placeholder="Коментар — надиктуйте або напишіть" value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} />
+            <textarea ref={noteRef} className="input" rows={3} placeholder="Коментар — надиктуйте або напишіть" value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} />
             <MicButton value={note} onChange={(v) => setNote(v.slice(0, 500))} />
           </div>
           {noteDirty && (
