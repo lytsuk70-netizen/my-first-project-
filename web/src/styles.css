@@ -316,7 +316,7 @@ label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width:
 .m-scanbtns button { border: 0; border-radius: 12px; height: 48px; background: #3a3a3c; color: var(--text); font-size: 16px; }
 .m-scanbtns button.ok { background: #2f6fe0; color: #fff; }
 .m-scanbtns button:disabled { opacity: .5; }
-.m-efile-open { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; background: none; border: 0; color: inherit; padding: 0; text-align: left; font: inherit; }
+.m-efile-open { text-decoration: none; display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; background: none; border: 0; color: inherit; padding: 0; text-align: left; font: inherit; }
 .m-efile-st { margin-left: auto; color: var(--muted, #8e8e93); font-size: 14px; background: none; border: 0; }
 .m-efile-st.err { color: #ff9f0a; }
 .m-crop { z-index: 60; background: #000; }
@@ -326,3 +326,5 @@ label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width:
 .m-crop-box svg { position: absolute; inset: 0; overflow: visible; }
 .m-crop-reset { background: none; border: 0; color: #2f8bff; font-size: 15px; justify-self: end; }
 .m-scanpage img { cursor: pointer; }
+.m-efile-share { margin-left: auto; flex: none; width: 40px; height: 40px; border: 0; border-radius: 10px; background: #2a2a2e; color: #2f8bff; display: grid; place-items: center; }
+.m-efile-open + .m-efile-share { margin-left: 8px; }

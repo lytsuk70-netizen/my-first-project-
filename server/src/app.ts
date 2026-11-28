@@ -393,6 +393,19 @@ export function createApp() {
     const { rows } = await pool.query('SELECT id::int AS id, name, url, content_type AS "contentType" FROM talko_tx_files WHERE user_id = $1 AND talko_id = $2 ORDER BY id', [uid(req), String(req.params.id)]);
     res.json(rows);
   }));
+  // the file itself, through our server: the phone can then share it (TALKO storage gives no CORS)
+  api.get('/talko/files/:fid/raw', h(async (req, res) => {
+    const { rows } = await pool.query('SELECT name, url, content_type AS "contentType" FROM talko_tx_files WHERE user_id = $1 AND id = $2', [uid(req), Number(req.params.fid) || 0]);
+    const f = rows[0];
+    if (!f) { res.status(404).json({ message: 'Файл не знайдено' }); return; }
+    const r = await fetch(f.url);
+    if (!r.ok) { res.status(502).json({ message: 'TALKO не віддав файл' }); return; }
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.setHeader('Content-Type', f.contentType || r.headers.get('content-type') || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.send(buf);
+  }));
   api.post('/talko/transactions/:id/files', h(async (req, res) => {
     const b = z.object({ name: text(200).min(1), contentType: text(100), data: z.string().min(10).max(15_000_000), clientId: text(80).optional() }).parse(req.body);
     res.json(await once(uid(req), b.clientId, async () => {

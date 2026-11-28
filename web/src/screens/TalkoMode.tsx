@@ -878,6 +878,12 @@ async function fileToUpload(f: File): Promise<{ name: string; contentType: strin
 }
 
 interface TFile { id: number; name: string; url: string; contentType: string }
+const b64ToBlob = (data: string, type: string) => { const bin = atob(data); const b = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i); return new Blob([b], { type }); };
+const ShareIcon = (
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 3v12" /><path d="M8 7l4-4 4 4" /><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" />
+  </svg>
+);
 
 /** Crop like a scanner app: drag the 4 corners onto the edges of the sheet; the page is straightened after. */
 function CropEditor({ src, corners, onDone, onCancel, onRetake }: { src: HTMLCanvasElement; corners: Pt[]; onDone: (c: Pt[]) => void; onCancel: () => void; onRetake?: () => void }) {
@@ -1045,6 +1051,32 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
     catch { toast('Не вдалося зберегти файл у телефоні — мало місця?', true); return false; }
     finally { setUploading(false); }
   }
+  /** Saved files are fetched in advance, so «Поділитися» opens the iPhone share sheet at once. */
+  const blobs = useRef(new Map<number, Blob>());
+  useEffect(() => {
+    for (const f of files ?? []) if (!blobs.current.has(f.id)) {
+      fetch('/api/talko/files/' + f.id + '/raw', { credentials: 'same-origin', headers: { 'X-Requested-With': 'groshi-ok' } })
+        .then((r) => r.ok ? r.blob() : null).then((b) => { if (b) blobs.current.set(f.id, b); }).catch(() => {});
+    }
+  }, [files]);
+  async function shareBlob(name: string, type: string, blob: Blob) {
+    const file = new File([blob], name, { type });
+    try {
+      if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; }
+      const u = URL.createObjectURL(blob); window.open(u, '_blank'); setTimeout(() => URL.revokeObjectURL(u), 60_000);
+      toast('Цей браузер не вміє ділитися файлами — відкрив файл, поділіться з нього');
+    } catch (e: any) { if (e?.name !== 'AbortError') toast('Не вдалося поділитися: ' + (e?.message ?? 'помилка'), true); }
+  }
+  async function shareSaved(f: TFile) {
+    const b = blobs.current.get(f.id);
+    if (b) { await shareBlob(f.name, f.contentType, b); return; }
+    toast('Завантажую файл… натисніть «Поділитися» ще раз за секунду');
+    try {
+      const r = await fetch('/api/talko/files/' + f.id + '/raw', { credentials: 'same-origin', headers: { 'X-Requested-With': 'groshi-ok' } });
+      if (!r.ok) throw new Error('файл недоступний');
+      blobs.current.set(f.id, await r.blob());
+    } catch (e: any) { toast('Не вдалося завантажити файл: ' + (e?.message ?? 'помилка'), true); }
+  }
   async function addFile(f: File | undefined) {
     if (fileRef.current) fileRef.current.value = '';
     if (!f) return;
@@ -1094,10 +1126,13 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
         {pending && <div className="m-day">⟳ Ще записується в TALKO — зміни підуть услід</div>}
         <div className="m-egroup">
           {(files ?? []).map((f) => (
-            <a key={f.id} className="m-efile" href={f.url} target="_blank" rel="noreferrer">
-              {f.contentType.startsWith('image/') ? <img src={f.url} alt="" /> : <span className="m-edoc">📄</span>}
-              <span className="ellipsis">{f.name}</span>
-            </a>
+            <div key={f.id} className="m-efile">
+              <a className="m-efile-open" href={f.url} target="_blank" rel="noreferrer">
+                {f.contentType.startsWith('image/') ? <img src={f.url} alt="" /> : <span className="m-edoc">📄</span>}
+                <span className="ellipsis">{f.name}</span>
+              </a>
+              <button className="m-efile-share" onClick={() => shareSaved(f)} aria-label="Поділитися">{ShareIcon}</button>
+            </div>
           ))}
           {queued.map((f) => (
             <div key={f.id} className="m-efile">
@@ -1108,6 +1143,7 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
               {f.error
                 ? <button className="m-efile-st err" onClick={() => FQ.retry(f.id)} title={f.error}>⚠ ще раз</button>
                 : <span className="m-efile-st">⟳</span>}
+              <button className="m-efile-share" onClick={() => shareBlob(f.name, f.contentType, b64ToBlob(f.data, f.contentType))} aria-label="Поділитися">{ShareIcon}</button>
             </div>
           ))}
           <button className="m-erow m-eadd" disabled={uploading} onClick={() => fileRef.current?.click()}>{uploading ? 'Завантажую…' : '📷 Додати фото або файл'}</button>
