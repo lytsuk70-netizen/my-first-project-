@@ -55,7 +55,9 @@ function parse(result: any): Json {
   let data: Json;
   data = parseLoose(text);
   if (result?.isError || data.error || (data.code && data.message && data.ok === false)) {
-    const msg = [data.message ?? data.error ?? text, data.next].filter(Boolean).join(' ');
+    const det = data.details ?? data.detail ?? data.fields ?? data.errors ?? data.issues;
+    const detTxt = det == null ? '' : typeof det === 'string' ? det : JSON.stringify(det).slice(0, 300);
+    const msg = [data.message ?? data.error ?? text, detTxt && `(${detTxt})`, data.next].filter(Boolean).join(' ');
     throw new IntegrationError(`TALKO: ${String(msg).slice(0, 500)}`);
   }
   return data;
@@ -354,7 +356,7 @@ export async function editTransaction(userId: string, id: string, input: { descr
 export async function uploadFile(userId: string, input: { name: string; contentType: string; data: string }) {
   const data = input.data.replace(/^data:[^,]*,/, '').replace(/\s+/g, '');
   const name = input.name.replace(/[\\/:*?"<>|]+/g, '-').slice(0, 120) || 'file';
-  const CH = 200_000; // base64 chars per part (multiple of 4)
+  const CH = 48_000; // base64 chars per part (multiple of 4); big parts are refused by TALKO with VALIDATION_ERROR
   let r: Json;
   if (data.length <= CH) {
     r = await talko(userId, 'talko_upload_file', { content: data, name, contentType: input.contentType });
