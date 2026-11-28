@@ -293,6 +293,9 @@ label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width:
 .m-erow:last-child { border-bottom: 0; }
 .m-erow:disabled { opacity: 1; }
 .m-eval { color: var(--balance, #ff5fa2); display: flex; align-items: center; gap: 6px; min-width: 0; text-align: right; }
+.m-enote { padding: 10px 12px 12px; display: grid; gap: 8px; }
+.m-enote-label { font-size: 15px; opacity: .7; }
+.m-enote textarea { font-size: 17px; min-height: 84px; resize: vertical; }
 .m-ecomment { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60vw; }
 .m-eadd { justify-content: center; color: var(--accent); }
 .m-edanger { justify-content: center; color: #ff453a; }

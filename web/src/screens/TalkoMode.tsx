@@ -944,8 +944,9 @@ function CropEditor({ src, corners, onDone, onCancel, onRetake }: { src: HTMLCan
 
 function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
   const { accounts, categories, enqueue, toast } = useTalko();
-  const [mode, setMode] = useState<null | 'account' | 'category' | 'amount' | 'date' | 'time' | 'comment'>(null);
+  const [mode, setMode] = useState<null | 'account' | 'category' | 'amount' | 'date' | 'time'>(null);
   const [val, setVal] = useState('');
+  const [note, setNote] = useState(() => cleanComment(tx.comment, tx.categoryName, accounts.find((a) => a.id === tx.accountId)?.name));
   const [files, setFiles] = useState<TFile[] | null>(null);
   const [uploading, setUploading] = useState(false);
   const [askDelete, setAskDelete] = useState(false);
@@ -996,12 +997,13 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
       const re = new RegExp(TIME_RE);
       edit(re.test(tx.comment ?? '') ? { time: v, day: tx.localDate, description: (tx.comment ?? '').replace(re, v) } : { time: v, day: tx.localDate });
     }
-    if (mode === 'comment') {
-      const re = new RegExp(TIME_RE);
-      const keep = !!tx.time && re.test(tx.comment ?? '') && !re.test(v);
-      edit({ description: keep ? `${v} (${tx.time})`.trim() : v });
-    }
     setMode(null);
+  }
+  function saveComment(raw: string) {
+    const v = raw.trim();
+    const re = new RegExp(TIME_RE);
+    const keep = !!tx.time && re.test(tx.comment ?? '') && !re.test(v);
+    edit({ description: keep ? `${v} (${tx.time})`.trim() : v });
   }
   async function addScanPage(f: File | undefined) {
     if (camRef.current) camRef.current.value = '';
@@ -1055,12 +1057,15 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
   if (mode === 'category') return <ListPicker title="Стаття" value={tx.categoryId ?? ''} onClose={() => setMode(null)}
     items={catList.map((c) => ({ id: c.id, label: c.name }))} onPick={(id) => { if (id !== tx.categoryId) edit({ categoryId: id }, { categoryName: categories.find((c) => c.id === id)?.name }); }} />;
   const comment = cleanComment(tx.comment, tx.categoryName, acc?.name);
-  const row = (label: string, value: React.ReactNode, onClick?: () => void) => (
+  const noteDirty = note.trim() !== comment.trim();
+  const saveNote = () => { if (noteDirty) { saveComment(note); toast('Коментар збережено'); } };
+  const close = () => { saveNote(); onClose(); };
+  const row =(label: string, value: React.ReactNode, onClick?: () => void) => (
     <button className="m-erow" onClick={onClick} disabled={!onClick}><span>{label}</span><span className="m-eval">{value} {onClick && '›'}</span></button>
   );
   return (
     <div className="m-hist">
-      <div className="m-picker-top"><button onClick={onClose} aria-label="Назад">‹</button><b>Редагування</b><span /></div>
+      <div className="m-picker-top"><button onClick={close} aria-label="Назад">‹</button><b>Редагування</b><span /></div>
       <div className="m-histbody">
         <div className="m-egroup">
           {row('Рахунок', acc?.name ?? '—', () => setMode('account'))}
@@ -1068,7 +1073,20 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
           {row('Сума', <b className={exp ? 'c-expense' : 'c-income'}>{money(tx.amount, tx.currency)}</b>, () => { setVal(tx.amount); setMode('amount'); })}
           {row('Дата', fmtDayLong(tx.localDate), () => { setVal(tx.localDate); setMode('date'); })}
           {row('Час', tx.time ?? '—', () => { setVal(tx.time ?? new Date().toTimeString().slice(0, 5)); setMode('time'); })}
-          {row('Коментар', <span className="m-ecomment">{comment || ''}</span>, () => { setVal(comment); setMode('comment'); })}
+        </div>
+        {/* the comment is open right away, above the file and delete buttons */}
+        <div className="m-egroup m-enote">
+          <div className="m-enote-label">Коментар</div>
+          <div className="m-micwrap">
+            <textarea className="input" rows={3} placeholder="Коментар — надиктуйте або напишіть" value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} />
+            <MicButton value={note} onChange={(v) => setNote(v.slice(0, 500))} />
+          </div>
+          {noteDirty && (
+            <div className="m-modal-btns">
+              <button onClick={() => setNote(comment)} aria-label="Скасувати зміни">✕</button>
+              <button className="ok" onClick={saveNote} aria-label="Зберегти коментар">✓</button>
+            </div>
+          )}
         </div>
         {pending && <div className="m-day">⟳ Ще записується в TALKO — зміни підуть услід</div>}
         <div className="m-egroup">
@@ -1127,12 +1145,10 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
       {mode && (
         <div className="m-modal" onClick={() => setMode(null)}>
           <div className="m-modal-box" onClick={(e) => e.stopPropagation()}>
-            {mode === 'comment' && <div className="m-micwrap"><textarea className="input" rows={4} placeholder="Коментар — надиктуйте або напишіть" value={val} maxLength={500} onChange={(e) => setVal(e.target.value)} /><MicButton value={val} onChange={(v) => setVal(v.slice(0, 500))} /></div>}
             {mode === 'amount' && <input autoFocus className="input num" inputMode="decimal" value={val} onChange={(e) => setVal(e.target.value.replace(/[^\d.,]/g, ''))} style={{ fontSize: 24 }} />}
             {mode === 'date' && <input autoFocus className="input" type="date" value={val} max={todayISO()} onChange={(e) => setVal(e.target.value)} />}
             {mode === 'time' && <input autoFocus className="input" type="time" value={val} onChange={(e) => setVal(e.target.value)} />}
             <div className="m-modal-btns">
-              {mode === 'comment' && <button onClick={() => setVal('')}>Очистити</button>}
               <button onClick={() => setMode(null)} aria-label="Скасувати">✕</button>
               <button className="ok" onClick={save} aria-label="Зберегти">✓</button>
             </div>
