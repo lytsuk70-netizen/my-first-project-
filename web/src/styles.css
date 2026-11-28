@@ -336,3 +336,5 @@ label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width:
 .m-efile-open + .m-efile-share { margin-left: 8px; }
 .m-efile-name { display: grid; min-width: 0; gap: 2px; }
 .m-efile-err { color: #ff9f0a; font-size: 12px; line-height: 1.25; white-space: normal; }
+.m-sw > .m-swrow { position: relative; z-index: 1; background: var(--surface, #1c1c1e); touch-action: pan-y; transition: transform .2s; }
+.m-egroup .m-sw + .m-sw { border-top: 0; }

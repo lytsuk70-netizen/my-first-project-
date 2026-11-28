@@ -911,6 +911,44 @@ async function fileToUpload(f: File): Promise<{ name: string; contentType: strin
 }
 
 interface TFile { id: number; name: string; url: string; contentType: string }
+
+/** One row that slides left under the finger like an iPhone list: «Видалити» behind it, a long swipe deletes at once. */
+function SwipeDel({ onDelete, children }: { onDelete: () => void; children: React.ReactNode }) {
+  const OPEN = 96;
+  const [x, setX] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const [gone, setGone] = useState(false);
+  const st = useRef<{ x0: number; y0: number; base: number; lock: 0 | 1 | 2; w: number; last: number } | null>(null);
+  const noClick = useRef(0);
+  const del = () => { setGone(true); setX(-2000); setTimeout(onDelete, 200); };
+  return (
+    <div className={'m-sw' + (gone ? ' gone' : '')}>
+      {x < 0 && (
+        <button className={'m-swdel' + (dragging && x < -(st.current?.w ?? 360) * 0.5 ? ' full' : '')} aria-label="Видалити" onClick={(e) => { e.stopPropagation(); del(); }}>
+          <span>🗑</span><small>Видалити</small>
+        </button>
+      )}
+      <div className="m-swrow" style={{ transform: x ? `translateX(${x}px)` : undefined, transition: dragging ? 'none' : undefined }}
+        onClickCapture={(e) => { if (Date.now() < noClick.current || x) { e.preventDefault(); e.stopPropagation(); if (x && !gone) setX(0); } }}
+        onTouchStart={(e) => { st.current = { x0: e.touches[0].clientX, y0: e.touches[0].clientY, base: x, lock: 0, w: e.currentTarget.getBoundingClientRect().width || 360, last: x }; }}
+        onTouchMove={(e) => {
+          const t = st.current; if (!t) return;
+          const dx = e.touches[0].clientX - t.x0, dy = e.touches[0].clientY - t.y0;
+          if (!t.lock) { if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return; t.lock = Math.abs(dx) > Math.abs(dy) ? 1 : 2; }
+          if (t.lock !== 1) return;
+          const nx = Math.min(0, Math.max(-t.w, t.base + dx)); t.last = nx; setDragging(true); setX(nx);
+        }}
+        onTouchEnd={() => {
+          const t = st.current; st.current = null; setDragging(false);
+          if (!t || t.lock !== 1) return;
+          noClick.current = Date.now() + 350;
+          if (t.last < -t.w * 0.5) del(); else setX(t.last < -40 ? -OPEN : 0);
+        }}>
+        {children}
+      </div>
+    </div>
+  );
+}
 const b64ToBlob = (data: string, type: string) => { const bin = atob(data); const b = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i); return new Blob([b], { type }); };
 const ShareIcon = (
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1110,6 +1148,11 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
       blobs.current.set(f.id, await r.blob());
     } catch (e: any) { toast('Не вдалося завантажити файл: ' + (e?.message ?? 'помилка'), true); }
   }
+  async function removeSaved(f: TFile) {
+    setFiles((x) => (x ?? []).filter((y) => y.id !== f.id));
+    try { await del('/talko/transactions/' + encodeURIComponent(SY.realIdOf(tx.id)) + '/files/' + f.id); toast('Файл видалено'); }
+    catch (e: any) { setFiles((x) => [...(x ?? []), f]); toast('Не вдалося видалити: ' + (e?.message ?? 'помилка'), true); }
+  }
   async function addFile(f: File | undefined) {
     if (fileRef.current) fileRef.current.value = '';
     if (!f) return;
@@ -1159,16 +1202,19 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
         {pending && <div className="m-day">⟳ Ще записується в TALKO — зміни підуть услід</div>}
         <div className="m-egroup">
           {(files ?? []).map((f) => (
-            <div key={f.id} className="m-efile">
+            <SwipeDel key={f.id} onDelete={() => removeSaved(f)}>
+            <div className="m-efile">
               <a className="m-efile-open" href={f.url} target="_blank" rel="noreferrer">
                 {f.contentType.startsWith('image/') ? <img src={f.url} alt="" /> : <span className="m-edoc">📄</span>}
                 <span className="ellipsis">{f.name}</span>
               </a>
               <button className="m-efile-share" onClick={() => shareSaved(f)} aria-label="Поділитися">{ShareIcon}</button>
             </div>
+            </SwipeDel>
           ))}
           {queued.map((f) => (
-            <div key={f.id} className="m-efile">
+            <SwipeDel key={f.id} onDelete={() => { FQ.remove(f.id); toast('Файл видалено'); }}>
+            <div className="m-efile">
               <button className="m-efile-open" onClick={() => window.open(FQ.previewUrl(f), '_blank')}>
                 {f.contentType.startsWith('image/') ? <img src={'data:' + f.contentType + ';base64,' + f.data} alt="" /> : <span className="m-edoc">📄</span>}
                 <span className="m-efile-name"><span className="ellipsis">{f.name}</span>{f.error && <small className="m-efile-err">{f.error}</small>}</span>
@@ -1178,6 +1224,7 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
                 : <span className="m-efile-st">⟳</span>}
               <button className="m-efile-share" onClick={() => shareBlob(f.name, f.contentType, b64ToBlob(f.data, f.contentType))} aria-label="Поділитися">{ShareIcon}</button>
             </div>
+            </SwipeDel>
           ))}
           <button className="m-erow m-eadd" disabled={uploading} onClick={() => fileRef.current?.click()}>{uploading ? 'Завантажую…' : '📷 Додати фото або файл'}</button>
           <button className="m-erow m-eadd" disabled={uploading} onClick={() => { setScan([]); setTimeout(() => camRef.current?.click(), 50); }}>📄 Сканувати документ</button>

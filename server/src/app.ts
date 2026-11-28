@@ -417,6 +417,11 @@ export function createApp() {
       return rows[0];
     }));
   }));
+  api.delete('/talko/transactions/:id/files/:fileId', h(async (req, res) => {
+    // removes the link from the entry (TALKO keeps the stored copy — it has no file delete)
+    await pool.query('DELETE FROM talko_tx_files WHERE user_id = $1 AND talko_id = $2 AND id = $3', [uid(req), String(req.params.id), Number(req.params.fileId) || 0]);
+    res.json({ ok: true });
+  }));
   api.delete('/talko/transactions/:id', h(async (req, res) => {
     const clientId = typeof req.query.clientId === 'string' ? req.query.clientId.slice(0, 80) : undefined;
     res.json(await once(uid(req), clientId, async () => {
