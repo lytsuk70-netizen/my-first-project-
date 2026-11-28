@@ -1138,7 +1138,7 @@ function TEditTx({ tx, onClose }: { tx: TTx; onClose: () => void }) {
             <div key={f.id} className="m-efile">
               <button className="m-efile-open" onClick={() => window.open(FQ.previewUrl(f), '_blank')}>
                 {f.contentType.startsWith('image/') ? <img src={'data:' + f.contentType + ';base64,' + f.data} alt="" /> : <span className="m-edoc">📄</span>}
-                <span className="ellipsis">{f.name}</span>
+                <span className="m-efile-name"><span className="ellipsis">{f.name}</span>{f.error && <small className="m-efile-err">{f.error}</small>}</span>
               </button>
               {f.error
                 ? <button className="m-efile-st err" onClick={() => FQ.retry(f.id)} title={f.error}>⚠ ще раз</button>

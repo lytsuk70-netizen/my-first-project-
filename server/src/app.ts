@@ -409,7 +409,9 @@ export function createApp() {
   api.post('/talko/transactions/:id/files', h(async (req, res) => {
     const b = z.object({ name: text(200).min(1), contentType: text(100), data: z.string().min(10).max(15_000_000), clientId: text(80).optional() }).parse(req.body);
     res.json(await once(uid(req), b.clientId, async () => {
-      const f = await TK.uploadFile(uid(req), b);
+      let f;
+      try { f = await TK.uploadFile(uid(req), b); }
+      catch (e: any) { console.error('[files] upload to TALKO failed:', b.name, b.contentType, b.data.length, '-', e?.message ?? e); throw e; }
       const { rows } = await pool.query('INSERT INTO talko_tx_files (user_id, talko_id, name, url, file_id, content_type) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id::int AS id, name, url, content_type AS "contentType"',
         [uid(req), String(req.params.id), b.name, f.url, f.fileId, b.contentType]);
       return rows[0];
