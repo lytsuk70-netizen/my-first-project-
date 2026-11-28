@@ -352,13 +352,29 @@ export async function editTransaction(userId: string, id: string, input: { descr
   return { status: 'saved' as const, result: r };
 }
 
+async function putViaLink(userId: string, name: string, contentType: string, bytes: Buffer): Promise<Json> {
+  const l = await talko(userId, 'talko_upload_file', { op: 'create_link', name, contentType });
+  const url = l.uploadUrl ?? l.url;
+  if (!url || !l.uploadId) throw new Error('немає посилання для завантаження');
+  const res = await fetch(String(url), { method: String(l.method ?? 'PUT'), headers: { 'Content-Type': contentType }, body: bytes as any });
+  const txt = await res.text();
+  if (!res.ok) throw new Error(`PUT ${res.status}: ${txt.slice(0, 200)}`);
+  let j: Json = parseLoose(txt);
+  if (!j.url) j = await talko(userId, 'talko_upload_file', { uploadId: l.uploadId });
+  return j;
+}
+
 /** Store a photo/scan in TALKO's file storage; returns its link. Big files go in parts (TALKO rejects one large base64 field). */
 export async function uploadFile(userId: string, input: { name: string; contentType: string; data: string }) {
   const data = input.data.replace(/^data:[^,]*,/, '').replace(/\s+/g, '');
   const name = input.name.replace(/[\\/:*?"<>|]+/g, '-').slice(0, 120) || 'file';
   const CH = 48_000; // base64 chars per part (multiple of 4); big parts are refused by TALKO with VALIDATION_ERROR
-  let r: Json;
-  if (data.length <= CH) {
+  let r: Json | null = null;
+  // 1) TALKO's one-time upload link: the bytes go in one plain HTTP PUT — no base64 size checks
+  try { r = await putViaLink(userId, name, input.contentType, Buffer.from(data, 'base64')); }
+  catch (e: any) { console.warn('[talko upload] link failed, falling back to parts:', e?.message ?? e); r = null; }
+  if (r && (r.url || r.file?.url)) { /* done */ }
+  else if (data.length <= CH) {
     r = await talko(userId, 'talko_upload_file', { content: data, name, contentType: input.contentType });
   } else {
     const total = Math.ceil(data.length / CH);

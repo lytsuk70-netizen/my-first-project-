@@ -33,7 +33,7 @@ async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBReq
     t.onerror = () => { bad(t.error); db.close(); };
   });
 }
-ready = tx<QFile[]>('readonly', (s) => s.getAll()).then((r) => { items = (r ?? []).sort((a, b) => a.at.localeCompare(b.at)); emit({ type: 'change' }); }).catch(() => {});
+ready = tx<QFile[]>('readonly', (s) => s.getAll()).then((r) => { items = (r ?? []).sort((a, b) => a.at.localeCompare(b.at)).map((f) => ({ ...f, error: undefined, tries: 0 })); // each app start tries refused files again emit({ type: 'change' }); }).catch(() => {});
 
 export const subscribe = (fn: (e: Ev) => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; };
 export const pendingFor = (txId: string) => items.filter((f) => f.txId === txId || realIdOf(f.txId) === realIdOf(txId));
