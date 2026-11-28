@@ -612,21 +612,48 @@ function cleanComment(c: string | null | undefined, cat?: string | null, acc?: s
 function TxList({ items, compact, dayHeads, selected, onSelect, actions, onDelete, onYesterday, onDate, pending }: { items: TTx[]; compact?: boolean; dayHeads?: boolean; pending?: Set<string>; selected?: string | null; onSelect?: (id: string) => void; actions?: (i: TTx) => React.ReactNode; onDelete?: (i: TTx) => Promise<void>; onYesterday?: (i: TTx) => void; onDate?: (i: TTx) => void }) {
   const { t, lang } = useT();
   const { accounts } = useTalko();
-  // swipe left on an entry reveals the red trash button, like «Деньги ОК»
+  // Swipe like iPhone: the row follows the finger. Left — a red «Видалити» shows behind it; let go past ~80px and it
+  // stays open (tap it to delete); drag on past half the width and the entry is deleted at once.
+  // Right — «Вчора» and «Дата».
+  const OPEN_L = 96, OPEN_R = 170;
   const [swiped, setSwiped] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState<string | null>(null);
-  // swipe right reveals «Вчора» and «Дата» (like iPhone Reminders)
   const [swipedR, setSwipedR] = useState<string | null>(null);
-  const touch = useRef<{ id: string; x: number; y: number } | null>(null);
-  const sw = onDelete || onYesterday || onDate ? (i: TTx) => ({
-    onTouchStart: (e: React.TouchEvent) => { touch.current = { id: i.id, x: e.touches[0].clientX, y: e.touches[0].clientY }; },
-    onTouchEnd: (e: React.TouchEvent) => {
+  const [drag, setDrag] = useState<{ id: string; x: number } | null>(null);
+  const [gone, setGone] = useState<string | null>(null);
+  const touch = useRef<{ id: string; x0: number; y0: number; base: number; lock: 0 | 1 | 2; w: number; last: number } | null>(null);
+  const noClickUntil = useRef(0);
+  const canL = !!onDelete, canR = !!(onYesterday || onDate);
+  const close = () => { setSwiped(null); setSwipedR(null); };
+  const remove = (i: TTx) => {
+    if (!onDelete) return;
+    setGone(i.id); close();
+    setTimeout(() => { onDelete(i).finally(() => setGone((g) => (g === i.id ? null : g))); }, 180);
+  };
+  const sw = canL || canR ? (i: TTx) => ({
+    onTouchStart: (e: React.TouchEvent<HTMLDivElement>) => {
+      if ((swiped && swiped !== i.id) || (swipedR && swipedR !== i.id)) close();
+      const base = swiped === i.id ? -OPEN_L : swipedR === i.id ? OPEN_R : 0;
+      touch.current = { id: i.id, x0: e.touches[0].clientX, y0: e.touches[0].clientY, base, lock: 0, w: e.currentTarget.getBoundingClientRect().width || 360, last: base };
+    },
+    onTouchMove: (e: React.TouchEvent<HTMLDivElement>) => {
+      const st = touch.current; if (!st || st.id !== i.id) return;
+      const dx = e.touches[0].clientX - st.x0, dy = e.touches[0].clientY - st.y0;
+      if (!st.lock) { if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return; st.lock = Math.abs(dx) > Math.abs(dy) ? 1 : 2; }
+      if (st.lock !== 1) return;
+      let x = st.base + dx;
+      x = Math.min(canR ? OPEN_R + 30 : 0, Math.max(canL ? -st.w : 0, x));
+      st.last = x; setDrag({ id: i.id, x });
+    },
+    onTouchEnd: () => {
       const st = touch.current; touch.current = null;
-      if (!st || st.id !== i.id) return;
-      const dx = e.changedTouches[0].clientX - st.x, dy = e.changedTouches[0].clientY - st.y;
-      if (Math.abs(dx) < 40 || Math.abs(dy) > Math.abs(dx)) return;
-      if (swiped || swipedR) { setSwiped(null); setSwipedR(null); return; } // any swipe closes an open row
-      if (dx < 0) setSwiped(i.id); else if (onYesterday || onDate) setSwipedR(i.id);
+      if (!st || st.id !== i.id || st.lock !== 1) return;
+      noClickUntil.current = Date.now() + 350;
+      setDrag(null);
+      const x = st.last;
+      if (canL && x < -st.w * 0.5) { remove(i); return; }
+      if (canL && x < -40) { setSwiped(i.id); setSwipedR(null); return; }
+      if (canR && x > 60) { setSwipedR(i.id); setSwiped(null); return; }
+      close();
     },
   }) : () => ({});
   if (!items.length) return <div className="empty">{t.nothing}</div>;
@@ -639,27 +666,33 @@ function TxList({ items, compact, dayHeads, selected, onSelect, actions, onDelet
           {!compact && <div className="day-head"><span>{fmtDay(d, lang, t)}</span><span className="num">{sumByCurrency(list)}</span></div>}
           {compact && dayHeads && d !== todayISO() && <div className="m-day">{d === isoDay(-1) ? (list[0]?.type === 'income' ? 'Отримано вчора' : 'Витрачено вчора') : fmtDay(d, lang, t)}: <b className="num">{sumByCurrency(list)}</b></div>}
           <div className="list">
-            {list.map((i) => (
-              <div key={i.id} className={'item' + (selected === i.id ? ' sel' : '') + (swiped === i.id ? ' swiped' : '') + (swipedR === i.id ? ' swiped-r' : '')} {...sw(i)}
-                onClick={() => { if (swiped || swipedR) { setSwiped(null); setSwipedR(null); return; } onSelect?.(i.id); }}>
-                {swipedR === i.id && (
+            {list.map((i) => {
+              const x = gone === i.id ? -2000 : drag?.id === i.id ? drag.x : swiped === i.id ? -OPEN_L : swipedR === i.id ? OPEN_R : 0;
+              const full = drag?.id === i.id && x < -((touch.current?.w ?? 360) * 0.5);
+              return (
+              <div key={i.id} className={'m-sw' + (gone === i.id ? ' gone' : '')}>
+                {canL && x < 0 && (
+                  <button className={'m-swdel' + (full ? ' full' : '')} aria-label="Видалити" onClick={(e) => { e.stopPropagation(); remove(i); }}>
+                    <span>🗑</span><small>Видалити</small>
+                  </button>
+                )}
+                {canR && x > 0 && (
                   <div className="m-left-acts" onClick={(e) => e.stopPropagation()}>
-                    {onYesterday && <button className="m-yest" onClick={() => { setSwipedR(null); onYesterday(i); }}>Вчора</button>}
-                    {onDate && <button className="m-dt" onClick={() => { setSwipedR(null); onDate(i); }}>Дата</button>}
+                    {onYesterday && <button className="m-yest" onClick={() => { close(); onYesterday(i); }}>Вчора</button>}
+                    {onDate && <button className="m-dt" onClick={() => { close(); onDate(i); }}>Дата</button>}
                   </div>
                 )}
+                <div className={'item' + (selected === i.id ? ' sel' : '')} {...sw(i)}
+                  style={{ transform: x ? `translateX(${x}px)` : undefined, transition: drag?.id === i.id ? 'none' : undefined }}
+                  onClick={() => { if (Date.now() < noClickUntil.current) return; if (swiped || swipedR) { close(); return; } onSelect?.(i.id); }}>
                 <span className="ic">{catIcon(i.categoryName ?? '')}</span>
                 <div className="main"><div className="t1">{i.categoryName || i.comment}</div><div className="t2">{accounts.find((a) => a.id === i.accountId)?.name}</div>{(() => { const c = cleanComment(i.comment, i.categoryName, accounts.find((a) => a.id === i.accountId)?.name); return c && i.categoryName ? <div className="t3">{c}</div> : null; })()}</div>
                 <div className={'amt num ' + (i.type === 'expense' ? 'c-expense' : 'c-income')}>{money(i.amount, i.currency)}<small>{pending?.has(i.id) && <span className="m-pend" title="Ще не в TALKO">⟳ </span>}{((i.files ?? 0) > 0 || FQ.pendingFor(i.id).length > 0) && <span title="Є фото або документ">📎 </span>}{i.time ?? ''}</small></div>
                 {selected === i.id && actions && <div className="m-actions" onClick={(e) => e.stopPropagation()}>{actions(i)}</div>}
-                {swiped === i.id && onDelete && (
-                  <button className="m-trash" aria-label="Видалити" disabled={deleting === i.id}
-                    onClick={async (e) => { e.stopPropagation(); setDeleting(i.id); try { await onDelete(i); setSwiped(null); } finally { setDeleting(null); } }}>
-                    {deleting === i.id ? '…' : '🗑'}
-                  </button>
-                )}
+                </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ))}

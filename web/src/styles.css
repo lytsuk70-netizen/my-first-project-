@@ -262,17 +262,23 @@ label.m-gbtn input[type=date] { position: absolute; inset: 0; opacity: 0; width:
 .m-day { text-align: center; font-size: 12px; color: var(--text-3); background: var(--surface); padding: 4px; margin: 6px 0 2px; border-radius: 6px; }
 .m-tr { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px; padding: 8px 4px; border-bottom: 1px solid var(--line, #2c2c2e); }
 .m-tr small { color: var(--text-3); }
-.item.swiped { transform: translateX(-56px); transition: transform .15s; position: relative; overflow: visible; }
-.item { transition: transform .15s; }
-.m-trash { position: absolute; right: -52px; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; border-radius: 50%; border: 0; background: #ff3b30; color: #fff; font-size: 20px; }
-.list:has(.swiped) { overflow: hidden; }
+.item { transition: transform .2s ease-out; }
+/* swipe rows (iPhone style): the row slides over a red «Видалити» on the right or «Вчора/Дата» on the left */
+.m-sw { position: relative; overflow: hidden; }
+.m-sw + .m-sw { border-top: 1px solid var(--line); }
+.m-sw > .item { position: relative; z-index: 1; background: var(--surface); touch-action: pan-y; }
+.m-sw > .item.sel { background: var(--surface-2, #1c1c1e); }
+.m-sw.gone { animation: swgone .2s ease-in .15s forwards; }
+@keyframes swgone { to { opacity: 0; max-height: 0; } }
+.m-swdel { position: absolute; inset: 0; border: 0; background: #ff3b30; color: #fff; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; padding-right: 22px; gap: 2px; font-size: 20px; }
+.m-swdel small { font-size: 12px; }
+.m-swdel.full { align-items: flex-end; padding-right: 30px; font-weight: 700; }
+.m-left-acts { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); display: flex; gap: 6px; }
 .m-micwrap { position: relative; display: flex; gap: 8px; align-items: stretch; }
 .m-micwrap > textarea, .m-micwrap > input { flex: 1; min-width: 0; }
 .m-mic { flex: none; width: 44px; min-height: 40px; border: 0; border-radius: 10px; background: #3a4a6a; color: #8ab4ff; display: grid; place-items: center; }
 .m-mic.on { background: #ff3b30; color: #fff; animation: micpulse 1s infinite; }
 @keyframes micpulse { 50% { opacity: .6; } }
-.item.swiped-r { transform: translateX(170px); position: relative; overflow: visible; }
-.m-left-acts { position: absolute; left: -166px; top: 50%; transform: translateY(-50%); display: flex; gap: 6px; }
 .m-left-acts button { width: 78px; height: 52px; border: 0; border-radius: 14px; color: #fff; font-size: 15px; line-height: 1.1; }
 .m-yest { background: #5b8def; }
 .m-dt { background: #5a5a5e; }
